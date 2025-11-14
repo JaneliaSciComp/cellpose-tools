@@ -13,7 +13,6 @@ dependencies:
   - lz4>=4.3.2
   - numcodecs
   - numpy>=1.26.0,<2
-  - ome-zarr-models=0.1.6
   - pip
   - psutil>=5.7.2
   - pydantic=2.7.1
@@ -26,5 +25,6 @@ dependencies:
   - tornado=6.4
   - zarr=2.18.7
   - pip:
+    - ome-zarr-models==0.1.6
     - torch==2.6.0
     - torchvision
