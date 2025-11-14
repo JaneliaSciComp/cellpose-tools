@@ -1,6 +1,12 @@
 # cellpose-tools
 This repository contains command line tools that allows one to run Cellpose distributed over a Dask cluster. These are used mostly by the [Cellpose Nextflow pipeline](https://github.com/JaneliaSciComp/nf-cellpose).
 
+# Setup the environment
+```
+mamba env create -n cellpose-tools -f conda-env.yml
+pip install -e .
+```
+
 # Running distributed cellpose
 ```
 python -m tools.main_distributed_cellpose \
