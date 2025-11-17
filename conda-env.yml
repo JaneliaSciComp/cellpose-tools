@@ -17,7 +17,6 @@ dependencies:
   - pydantic=2.7.1
   - python-blosc2=3.0.0
   - pyyaml
-  - pynrrd
   - roifile
   - scikit-image>=0.21.0
   - scikit-learn>=1.4.1
@@ -25,6 +24,7 @@ dependencies:
   - pip:
     - cellpose==4.0.7
     - ome-zarr-models==0.1.6
+    - pynrrd
     - tornado
-    - torch==2.0.6
+    - torch==2.0.8
     - torchvision
