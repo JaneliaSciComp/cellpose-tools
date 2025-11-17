@@ -2,7 +2,6 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
-  - cellpose=4.0.6
   - c-blosc2
   - dask=2025.5.1
   - distributed=2025.5.1
@@ -19,12 +18,14 @@ dependencies:
   - python-blosc2=3.0.0
   - pyyaml
   - pynrrd
+  - pytorch=2.0.6
   - roifile
   - scikit-image>=0.21.0
   - scikit-learn>=1.4.1
   - tornado=6.4
+  - torchaudio
+  - torchvision
   - zarr=2.18.7
   - pip:
+    - cellpose=4.0.6
     - ome-zarr-models==0.1.6
-    - torch==2.6.0
-    - torchvision
