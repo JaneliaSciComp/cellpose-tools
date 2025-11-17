@@ -26,6 +26,5 @@ dependencies:
   - zarr=2.18.7
   - pip:
     - torch==2.0.6
-    - torchaudio
     - torchvision
     - cellpose==4.0.6
