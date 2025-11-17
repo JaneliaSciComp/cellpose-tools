@@ -12,6 +12,7 @@ dependencies:
   - lz4>=4.3.2
   - numcodecs
   - numpy>=1.26.0,<2
+  - ome-zarr-models=0.1.6
   - pip
   - psutil>=5.7.2
   - pydantic=2.7.1
@@ -28,4 +29,3 @@ dependencies:
   - zarr=2.18.7
   - pip:
     - cellpose=4.0.6
-    - ome-zarr-models==0.1.6
