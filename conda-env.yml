@@ -12,7 +12,6 @@ dependencies:
   - lz4>=4.3.2
   - numcodecs
   - numpy>=1.26.0,<2
-  - ome-zarr-models=0.1.6
   - pip
   - psutil>=5.7.2
   - pydantic=2.7.1
@@ -22,9 +21,10 @@ dependencies:
   - roifile
   - scikit-image>=0.21.0
   - scikit-learn>=1.4.1
-  - tornado=6.4
   - zarr=2.18.7
   - pip:
+    - cellpose==4.0.6
+    - ome-zarr-models==0.1.6
+    - tornado
     - torch==2.0.6
     - torchvision
-    - cellpose==4.0.6
