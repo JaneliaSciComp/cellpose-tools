@@ -23,8 +23,8 @@ dependencies:
   - scikit-image>=0.21.0
   - scikit-learn>=1.4.1
   - zarr=2.18.7
-  - pytorch=2.8.0
-  - torchvision=0.24.0
   - tornado
   - pip:
     - cellpose==4.0.7
+    - torch==2.8.0
+    - torchvision==0.24.0
