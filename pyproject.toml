@@ -9,7 +9,7 @@ description = "Tools for running distributed cellpose for large images"
 license = "BSD-3-Clause"
 requires-python = ">=3.12"
 dependencies = [
-    "cellpose==4.0.6",
+    "cellpose==4.0.7",
     "dask==2025.5.1",
     "distributed==2025.5.1",
     "numpy>=1.26.0,<2",
