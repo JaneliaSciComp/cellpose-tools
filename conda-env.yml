@@ -12,19 +12,19 @@ dependencies:
   - lz4>=4.3.2
   - numcodecs
   - numpy>=1.26.0,<2
+  - ome-zarr-models=0.1.6
   - pip
   - psutil>=5.7.2
   - pydantic=2.7.1
   - python-blosc2=3.0.0
+  - pynrrd
   - pyyaml
   - roifile
   - scikit-image>=0.21.0
   - scikit-learn>=1.4.1
   - zarr=2.18.7
+  - pytorch=2.8.0
+  - torchvision=0.24.0
+  - tornado
   - pip:
     - cellpose==4.0.7
-    - ome-zarr-models==0.1.6
-    - pynrrd
-    - tornado
-    - torch==2.0.8
-    - torchvision
