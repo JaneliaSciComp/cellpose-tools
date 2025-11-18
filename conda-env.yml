@@ -27,4 +27,4 @@ dependencies:
   - pip:
     - cellpose==4.0.7
     - torch==2.8.0
-    - torchvision==0.24.0
+    - torchvision
