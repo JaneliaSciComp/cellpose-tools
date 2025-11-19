@@ -1,5 +1,5 @@
 # cellpose-tools
-This repository contains command line tools that allows one to run Cellpose distributed over a Dask cluster. These are used mostly by the [Cellpose Nextflow pipeline](https://github.com/JaneliaSciComp/nf-cellpose).
+This repository contains command line tools that allows one to run [Cellpose](https://github.com/MouseLand/cellpose) distributed over a Dask cluster. These are used mostly by the [Cellpose Nextflow pipeline](https://github.com/JaneliaSciComp/nf-cellpose).
 
 # Setup the environment
 ```
