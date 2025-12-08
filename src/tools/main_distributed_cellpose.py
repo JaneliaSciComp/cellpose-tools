@@ -1,23 +1,38 @@
-from math import floor
+import json
+import logging
 import os
 import sys
 import traceback
-
-import io_utils.read_utils as read_utils
-import io_utils.write_utils as write_utils
+import zarr
 
 from cellpose.cli import get_arg_parser
 
 from dask.distributed import (Client, LocalCluster)
 
+from io_utils.read_utils import open_array, read_array_attrs
+from io_utils.write_utils import container_type, write_zarray_as
+
+from math import floor
+
 from segmentation.cellpose import (distributed_eval, local_eval)
 from segmentation.preprocessing import get_preprocessing_steps
-
-from io_utils.zarr_utils import prepare_parent_group_attrs
 
 from utils.configure_logging import (configure_logging)
 from utils.configure_dask import (load_dask_config, ConfigureWorkerPlugin)
 
+from zarr_tools.ngff.ngff_utils import (create_ome_metadata, get_axes_dictindex,
+                                        get_non_spatial_axes, get_spatial_voxel_spacing)
+from zarr_tools.io.zarr_io import create_zarr_array
+
+
+logger:logging.Logger
+
+
+def _dictfromjson(arg:str):
+    if arg:
+        return json.loads(arg)
+    else:
+        return {}
 
 def _floattuple(arg):
     if arg is not None and arg.strip():
@@ -61,7 +76,7 @@ def _define_args():
     args_parser.add_argument('--timeindex',
                              dest='input_timeindex',
                              type=int,
-                             default=0,
+                             default=None,
                              help = "Time index in case the input is an OME-ZARR container")
     args_parser.add_argument('--input-channels', '--input_channels',
                              dest='input_channels',
@@ -71,12 +86,13 @@ def _define_args():
     args_parser.add_argument('--voxel-spacing', '--voxel_spacing',
                              dest='voxel_spacing',
                              type=_floattuple,
-                             help = "voxel spacing")
+                             metavar='X,Y,Z',
+                             help = "Spatial voxel spacing as X,Y,Z")
 
     args_parser.add_argument('--mask',
                              dest='mask',
                              type=str,
-                             help = "mask directory")
+                             help = "Mask directory")
     args_parser.add_argument('--mask-subpath', '--mask_subpath',
                              dest='mask_subpath',
                              type=str,
@@ -99,7 +115,21 @@ def _define_args():
     args_parser.add_argument('--output-blocksize', '--output_blocksize',
                              dest='output_blocksize',
                              type=_inttuple,
+                             metavar='X,Y,Z',
                              help='Output chunk size as a tuple (x,y,z).')
+    args_parser.add_argument('--compressor',
+                             default='zstd',
+                             help='Zarr array compression algorithm')
+    args_parser.add_argument('--compression-opts', '--compression_opts',
+                             dest='compression_opts',
+                             type=_dictfromjson,
+                             default={},
+                             help='Zarr array compression options')
+    args_parser.add_argument('--zarr-format', '--zarr_format',
+                             type=int,
+                             default=2,
+                             dest='zarr_format',
+                             help='Zarr format (2 or 3 for v2 or v3)')
 
     args_parser.add_argument('--working-dir', '--working_dir',
                              dest='working_dir',
@@ -114,6 +144,7 @@ def _define_args():
     args_parser.add_argument('--blocks-overlaps', '--blocks_overlaps',
                              dest='blocks_overlaps',
                              type=_inttuple,
+                             metavar='dX,dY,dZ',
                              help='Blocks overlaps as a tuple (x,y,z).')
     args_parser.add_argument('--max-size-fraction', '--max_size_fraction',
                              dest='max_size_fraction',
@@ -171,7 +202,7 @@ def _define_args():
                                   dest='models_dir',
                                   type=str,
                                   help='cache cellpose models directory')
-    distributed_args.add_argument('--model',
+    distributed_args.add_argument('--model', '--pretrained-model',
                                   dest='segmentation_model',
                                   type=str,
                                   default='cpsam',
@@ -236,54 +267,27 @@ def _run_segmentation(args):
                                               worker_cpus=args.worker_cpus)
         dask_client.register_plugin(worker_config, name='WorkerConfig')
 
-    image_data, image_attrs = read_utils.open(args.input, args.input_subpath)
-    image_ndim = image_data.ndim
-    image_shape = image_data.shape
-    image_dtype = image_data.dtype
-    image_data = None
+    input_image_attrs = read_array_attrs(args.input, args.input_subpath)
+    image_ndim = input_image_attrs['array_ndim']
+    image_shape = input_image_attrs['array_shape']
+    image_dtype = input_image_attrs['array_dtype']
 
     if args.voxel_spacing is not None:
-        voxel_spacing = read_utils.get_voxel_spacing({}, args.voxel_spacing)
+        # voxel spacing is specified in the command line, so use this value
+        voxel_spacing = args.voxel_spacing[::-1] # this is specified as XYZ and we want it as ZYX
     else:
-        voxel_spacing = read_utils.get_voxel_spacing(image_attrs, (1.,) * image_ndim)
+        voxel_spacing = get_spatial_voxel_spacing(input_image_attrs)
 
     if voxel_spacing is not None:
         if args.expansion_factor > 0:
-            expansion = args.expansion_factor
-        else:
-            expansion = 1.
-        voxel_spacing /= expansion
-        spatial_ndims = len(voxel_spacing)
+            voxel_spacing = [c / args.expansion_factor for c in voxel_spacing]
     else:
-        spatial_ndims = 3 # assume 3D for now
+        voxel_spacing = (1,) * (3 if args.do_3D else 2)
 
     logger.info(f'Image data shape/dim/dtype: {image_shape}, {image_ndim}, {image_dtype}')
     
     if args.output:
-        output_subpath = args.output_subpath if args.output_subpath else args.input_subpath
-
-        if args.process_blocksize is not None:
-            if len(args.process_blocksize) < image_ndim:
-                # append 0s
-                process_blocksize_arg = (args.process_blocksize +
-                                        (0,) * (image_ndim - len(args.process_blocksize)))
-            else:
-                process_blocksize_arg = args.process_blocksize
-            zyx_process_size = process_blocksize_arg[::-1] # make it zyx
-            process_blocksize = tuple([d if d > 0 else image_shape[di]
-                                        for di,d in enumerate(zyx_process_size)])
-        else:
-            process_blocksize = image_shape # process the whole image
-
-        if (args.blocks_overlaps is not None and
-            len(args.blocks_overlaps) > 0):
-            blocks_overlaps = args.blocks_overlaps[::-1] # make it zyx
-        else:
-            blocks_overlaps = ()
-
         try:
-            logger.info(f'Invoke segmentation for {image_shape} with process blocksize {process_blocksize}')
-
             if args.anisotropy and args.anisotropy != 1.0:
                 anisotropy = args.anisotropy
             else:
@@ -297,135 +301,124 @@ def _run_segmentation(args):
                                                           voxel_spacing=voxel_spacing)
             logger.info(f'Preprocessing steps: {preprocessing_steps}')
 
-            if args.z_axis is not None:
-                z_axis = args.z_axis
+            image_axes = get_axes_dictindex(input_image_attrs)
+            if args.input_timeindex is not None:
+                input_timeindex = args.input_timeindex
             else:
-                z_axis = None
+                # if no input timeindex arg was provided
+                # and if it's an OME that has time index, default it to 0
+                if image_axes.get('t') is not None:
+                    input_timeindex = 0
+                else:
+                    # assume the input image has no timepoints dimension
+                    input_timeindex = None
+
+            # prepare the channel_axis and the z_axis arg
             if args.channel_axis is not None:
                 channel_axis = args.channel_axis
             else:
-                channel_axis = None
+                channel_axis = image_axes.get('c', None)
+
+            if args.z_axis is not None:
+                z_axis = args.z_axis
+            else:
+                z_axis = image_axes.get('z', None)
+
+            normalize_lowhigh = ((int(args.norm_lowhigh[0]), int(args.norm_lowhigh[1]))
+                                    if args.norm_lowhigh is not None else None)
+            normalize_percentile = ((int(args.norm_percentile[0]), int(args.norm_percentile[1]))
+                                    if args.norm_percentile is not None else None)
+            cellpose_model_args = {
+                'use_gpu': args.use_gpu,
+                'gpu_device': args.gpu_device,
+                'pretrained_model': args.segmentation_model,
+            }
+            normalize_args = {
+                'normalize': not args.no_norm,
+                'lowhigh': normalize_lowhigh,
+                'percentile': normalize_percentile,
+                'norm3D': args.do_3D,
+                'sharpen_radius': args.normalize_sharpen_radius,
+                'smooth_radius': args.normalize_smooth_radius,
+                'tile_norm_blocksize': 0,
+                'tile_norm_smooth3D': 1,
+                'invert': args.normalize_invert,
+            }
+            cellpose_eval_args = {
+                'diameter': args.diameter,
+                'do_3D': args.do_3D,
+                'min_size': args.min_size,
+                'max_size_fraction': args.max_size_fraction,
+                'niter': args.niter,
+                'anisotropy': anisotropy,
+                'z_axis': z_axis,
+                'channel_axis': channel_axis,
+                'flow_threshold': args.flow_threshold,
+                'cellprob_threshold': args.cellprob_threshold,
+                'stitch_threshold': args.stitch_threshold,
+                'flow3D_smooth': args.flow3D_smooth,
+                'batch_size': 8,
+            }
+            input_image_array = open_array(input_image_attrs['array_storepath'], input_image_attrs['array_subpath'])
+            labels_zarr = _create_output_labels_zarr(args, input_image_attrs)
             if dask_client is not None:
-                # ignore bounding boxes
+                # set the process size and the blocks overlap
+                if args.process_blocksize is not None:
+                    # process_blocksize are specified (as X,Y,Z) so revert them
+                    process_blocksize = args.process_blocksize[::-1]
+                else:
+                    process_blocksize = image_shape # process the whole image
+
+                if args.blocks_overlaps is not None:
+                    # blocks_overlaps are also specified as dX,dY,dZ overlaps 
+                    # so we need to revert them
+                    blocks_overlaps = args.blocks_overlaps[::-1]
+                else:
+                    blocks_overlaps = ()
+
+                logger.info((
+                    f'Invoke distributed segmentation {input_image_attrs['array_storepath']}:{input_image_attrs['array_subpath']} '
+                    f'timeindex: {input_timeindex}, input channels: {args.input_channels} '
+                    f'process block size: {process_blocksize}, blocks overlaps: {blocks_overlaps}'
+                ))
+
                 output_labels, boxes = distributed_eval(
-                    args.input,
-                    args.input_subpath,
-                    image_shape,
-                    args.input_timeindex,
+                    input_image_array,
+                    input_timeindex,
                     args.input_channels,
-                    args.segmentation_model,
                     process_blocksize,
                     args.working_dir,
+                    labels_zarr,
                     dask_client,
-                    diameter=args.diameter,
-                    spatial_ndims=spatial_ndims,
-                    do_3D=args.do_3D,
-                    blocksoverlap=blocks_overlaps,
-                    min_size=args.min_size,
-                    max_size_fraction=args.max_size_fraction,
-                    niter=args.niter,
-                    anisotropy=anisotropy,
-                    z_axis=z_axis,
-                    channel_axis=channel_axis,
-                    normalize=not args.no_norm,
-                    normalize_lowhigh=args.norm_lowhigh,
-                    normalize_percentile=args.norm_percentile,
-                    normalize_norm3D=True,
-                    normalize_sharpen_radius=args.normalize_sharpen_radius,
-                    normalize_smooth_radius=args.normalize_smooth_radius,
-                    normalize_invert=args.normalize_invert,
-                    flow_threshold=args.flow_threshold,
-                    cellprob_threshold=args.cellprob_threshold,
-                    stitch_threshold=args.stitch_threshold,
-                    flow3D_smooth=args.flow3D_smooth,
-                    label_dist_th=args.label_dist_th,
+                    blockoverlaps=blocks_overlaps,
+                    mask=None,
                     preprocessing_steps=preprocessing_steps,
-                    use_gpu=args.use_gpu,
-                    gpu_device=args.gpu_device,
+                    cellpose_model_args=cellpose_model_args,
+                    normalize_args=normalize_args,
+                    cellpose_eval_args=cellpose_eval_args,
+                    label_dist_th=args.label_dist_th,
                 )
                 nlabels = len(boxes)
             else:
+                input_image_array = open_array(input_image_attrs['array_storepath'], input_image_attrs['array_subpath'])
                 output_labels, nlabels = local_eval(
-                    args.input,
-                    args.input_subpath,
+                    input_image_array,
                     args.input_timeindex,
                     args.input_channels,
-                    args.segmentation_model,
-                    diameter=args.diameter,
-                    spatial_ndims=spatial_ndims,
-                    do_3D=args.do_3D,
-                    min_size=args.min_size,
-                    max_size_fraction=args.max_size_fraction,
-                    niter=args.niter,
-                    anisotropy=anisotropy,
-                    z_axis=z_axis,
-                    channel_axis=channel_axis,
-                    normalize=not args.no_norm,
-                    normalize_lowhigh=args.norm_lowhigh,
-                    normalize_percentile=args.norm_percentile,
-                    normalize_norm3D=True,
-                    normalize_sharpen_radius=args.normalize_sharpen_radius,
-                    normalize_smooth_radius=args.normalize_smooth_radius,
-                    normalize_invert=args.normalize_invert,
-                    flow_threshold=args.flow_threshold,
-                    cellprob_threshold=args.cellprob_threshold,
-                    stitch_threshold=args.stitch_threshold,
-                    flow3D_smooth=args.flow3D_smooth,
+                    labels_zarr,
                     preprocessing_steps=preprocessing_steps,
-                    use_gpu=args.use_gpu,
-                    gpu_device=args.gpu_device,
+                    cellpose_model_args=cellpose_model_args,
+                    normalize_args=normalize_args,
+                    cellpose_eval_args=cellpose_eval_args,
                 )
 
             logger.info(f'Finished segmentation process. Found {nlabels-1} labels')
-
-            labels_group_attrs = prepare_parent_group_attrs(
-                os.path.basename(args.output),
-                output_subpath,
-                axes=image_attrs.get('axes'),
-                coordinateTransformations=image_attrs.get('coordinateTransformations'),
-                image_label_attrs=_create_image_label_attrs(nlabels),
-            )
-
-            if args.output_blocksize is not None:
-                if len(args.output_blocksize) < output_labels.ndim:
-                    # append 0s which later will be replaced
-                    # with corresponding output_labels dimension
-                    output_blocksize_arg = (args.output_blocksize +
-                                            output_labels[0:(output_labels.ndim-len(args.output_blocksize))][::-1])
-                else:
-                    output_blocksize_arg = args.output_blocksize
-                zyx_blocksize = output_blocksize_arg[::-1] # make it zyx
-                output_blocks = tuple([d if d > 0 else output_labels.shape[di]
-                                    for di,d in enumerate(zyx_blocksize)])
+            output__container_type = container_type(args.output)
+            if output__container_type != 'zarr':
+                logger.info(f'Save output labels as {output__container_type} at {args.output}')
+                write_zarray_as(output_labels, args.output, args.output_subpath)
             else:
-                # default to output_chunk_size
-                output_blocks = (args.output_chunk_size,) * output_labels.ndim
-
-            if len(output_labels.shape) < len(image_shape):
-                output_shape = (1,) * (len(image_shape) - len(output_labels.shape)) + output_labels.shape
-            else:
-                output_shape = output_labels.shape
-
-            if len(output_blocks) < len(image_shape):
-                output_blocks = (1,) * (len(image_shape) - len(output_blocks)) + output_blocks
-
-            persisted_labels = write_utils.save(
-                args.output, output_subpath,
-                output_labels, output_shape,
-                blocksize=output_blocks,
-                container_attributes=labels_group_attrs,
-                pixelResolution=image_attrs.get('pixelResolution'),
-                downsamplingFactors=image_attrs.get('downsamplingFactors'),
-            )
-
-            if persisted_labels is not None:
-                if dask_client is not None:
-                    r = dask_client.compute(persisted_labels).result()
-                else:
-                    r = persisted_labels.compute()
-                logger.info(f'DONE ({r})!')
-            else:
-                logger.warning('No segmentation labels were generated')
+                _update_image_label_attrs(output_labels, nlabels)
 
             if dask_client is not None:
                 dask_client.close()
@@ -441,16 +434,103 @@ def _print_version_and_exit():
     sys.exit(0)
 
 
+def _create_output_labels_zarr(args, image_attrs, labels_dtype='uint32'):
+    """
+    Create a zarr array with the same dimensionality as the input image,
+    not necessarily the same shape but the labels zarr
+    should have the same number of dimensions
+    """
+    output_labels_container_type = container_type(args.output)
+    output_subpath = args.output_subpath if args.output_subpath else args.input_subpath
+
+    if output_labels_container_type != 'zarr':
+        # since the output is not a zarr - create a temporary zarr to hold the labels
+        labels_zarr_path = f'{args.working_dir}/segmentation.zarr'
+        labels_array_subpath = 'block_labels'
+        ome_metadata = {}
+    else:
+        labels_zarr_path = args.output
+        labels_array_subpath = output_subpath
+        image_transforms = image_attrs.get('array_transforms', {})
+        ome_metadata = create_ome_metadata(
+            os.path.basename(labels_zarr_path),
+            labels_array_subpath,
+            image_attrs.get('array_axes'),
+            image_transforms.get('scale'),
+            image_transforms.get('translation'),
+            image_attrs.get('array_ndim'),
+            ome_version='0.4'
+        )
+
+    image_ndim = image_attrs['array_ndim']
+    non_spatial_axes = get_non_spatial_axes(image_attrs).values()
+    # the output labels image should have the same dimensions as the input image
+    input_image_shape = image_attrs['array_shape']
+    labels_shape = tuple(input_image_shape[di] 
+                         if di not in non_spatial_axes else 1
+                         for di in range(len(input_image_shape)))
+
+    if args.output_blocksize is not None:
+        # if output blocksize is specified, use it but 
+        # ensure that it has the same number of dimensions as the input image
+        if len(args.output_blocksize) < image_ndim:
+            # make the chunksize 1 for missing dimensions
+            # also since the output blocksize is specified as X,Y,Z - revert it to Z,Y,X
+            output_blocksize = (args.output_blocksize + (1,) * (image_ndim - len(args.output_blocksize)))[::-1]
+        else:
+            # the blocksize already has the same number of dimensions as the input,
+            # just reverse it because in the command line we specify as x,y,z[,c,t]
+            output_blocksize = args.output_blocksize[::-1]
+    else:
+        # default to output_chunk_size for spatial axes or 1 for the other axes
+        if non_spatial_axes == ():
+            output_blocksize = (args.output_chunk_size,) * image_ndim
+        else:
+            output_blocksize = (1,) * len(non_spatial_axes) + (args.output_chunk_size,) * (image_ndim - len(non_spatial_axes))
+
+    logger.info((
+        f'Create labels zarr {labels_zarr_path}:{labels_array_subpath} '
+        f'zarr format: {args.zarr_format}, shape: {labels_shape}, chunksize: {output_blocksize} '
+        f'compressor: {args.compressor} '
+    ))
+
+    return create_zarr_array(
+        labels_zarr_path,
+        labels_array_subpath,
+        labels_shape,
+        output_blocksize,
+        labels_dtype,
+        compressor=args.compressor,
+        compression_opts=args.compression_opts,
+        parent_array_attrs=ome_metadata,
+        zarr_format=args.zarr_format,
+    )
+
+
+def _update_image_label_attrs(labels_zarr:zarr.Array, nlabels):
+    image_label_attrs = _create_image_label_attrs(nlabels)
+    parent_path = os.path.dirname(labels_zarr.path)
+    if parent_path != '':
+        # array not at the root
+        parent_group = zarr.open_group(store=labels_zarr.store, path=parent_path, mode="a")
+        parent_group.attrs.update({
+            'image-label': image_label_attrs,
+        })
+
+
 def _create_image_label_attrs(nlabels:int, ome_ngff_version='0.4', source_image_path='..'):
+    """
+    Create image label attributes for <nlabels> labels
+    """
     # set HSV parameters
     s = 1.0
     v = 1.0
     colors = []
-    for l in range(nlabels-1):
-        h = l/nlabels
+    for lnum in range(nlabels-1):
+        h = lnum/nlabels
         r, g, b = _hsv2rgb(h, s, v)
         colors.append({
-            'label-value': l + 1,
+            'label-value': lnum + 1,
             'rgba': [r, g, b, 255]
         })
 

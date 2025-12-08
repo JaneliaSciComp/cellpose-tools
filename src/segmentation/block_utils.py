@@ -1,7 +1,7 @@
 import logging
 import numpy as np
 
-import io_utils.read_utils as read_utils
+from typing import Tuple, List
 
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,59 @@ def get_nblocks(shape, blocksize):
     return np.ceil(np.array(shape) / blocksize).astype(int)
 
 
+def prepare_blocksize(shape: Tuple[int, ...]|List[int],
+                      blocksize: Tuple[int, ...]|List[int]) -> List[int]:
+    ndim = len(shape)
+    blocksize_ndim = len(blocksize)
+    final_blocksize = []
+
+    # the blocksize may have fewer elements than the image shape
+    # in that case we right align it to shape
+    # if somehow blocksize has more elements than shape
+    # we drop the first elements until the sizes match
+    offset = ndim - blocksize_ndim
+    
+    for si in range(ndim):
+        final_blocksize.append(shape[si] if si < offset else blocksize[si - offset])
+
+    return final_blocksize
+
+
+def prepare_overlaps(shape: Tuple[int, ...], 
+                     blocksize: Tuple[int, ...]|List[int],
+                     blockoverlaps: Tuple[int, ...]|List[int]|None,
+                     default_overlap: float|None=None) -> List[int]:
+    ndim = len(shape)
+    blocksize_ndim = len(blocksize)
+
+    def default_overlap_forsize(s):
+        return int(s * 0.1) if default_overlap is None else int(default_overlap)
+
+    # If overlaps not provided (None / empty), compute defaults for every blocksize dim
+    if not blockoverlaps:
+        offset = ndim - blocksize_ndim  # blocksize is right-aligned to shape
+        return [
+            0 if blocksize[i] == shape[i + offset] 
+              else default_overlap_forsize(blocksize[i])
+            for i in range(blocksize_ndim)
+        ]
+
+    # If overlaps provided as list/tuple, right-align overlaps to blocksize
+    if isinstance(blockoverlaps, (list, tuple)):
+        bo_ndim = len(blockoverlaps)
+        offset_shape = ndim - blocksize_ndim
+        offset_ov = max(blocksize_ndim - bo_ndim, 0)  # how much overlaps lags behind blocksize
+        return [
+            0 if blocksize[i] == shape[i + offset_shape]
+            else (int(blockoverlaps[i - offset_ov])
+                  if i >= offset_ov 
+                  else default_overlap_forsize(blocksize[i]))
+            for i in range(blocksize_ndim)
+        ]
+
+    raise ValueError(f"Invalid block overlaps argument: {blockoverlaps}")
+
+
 def remove_overlaps(array, crop, overlaps, blocksize):
     """
     Overlaps are only there to provide context for boundary voxels
@@ -91,15 +144,3 @@ def remove_overlaps(array, crop, overlaps, blocksize):
             a = crop_trimmed[axis].start
             crop_trimmed[axis] = slice(a, a + blocksize[axis])
     return array, crop_trimmed
-
-
-def compute_block_anisotropy(block_attrs:dict|None):
-    if block_attrs is None:
-        return 1.0
-
-    voxel_spacing = read_utils.get_voxel_spacing(block_attrs)
-    if voxel_spacing is None:
-        return 1.0
-    else:
-        z, y, _ = voxel_spacing
-        return z / y

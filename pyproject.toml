@@ -10,10 +10,11 @@ license = "BSD-3-Clause"
 requires-python = ">=3.12"
 dependencies = [
     "cellpose==4.0.7",
-    "dask==2025.5.1",
-    "distributed==2025.5.1",
-    "numpy>=1.26.0,<2",
-    "zarr>=2.18,<3",
+    "dask==2025.11.0",
+    "distributed==2025.11.0",
+    "numpy>2,<3",
+    "zarr>3,<4",
+    "zarr-tools @ git+https://github.com/JaneliaSciComp/zarr-tools.git@fbd294d",
 ]
 
 [tool.setuptools.packages.find]

@@ -2,66 +2,44 @@
 This is code contributed by Greg Fleishman to run Cellpose on a Dask cluster.
 """
 import cellpose.models
-import dask.array as da
 import dask_image.ndmeasure as di_ndmeasure
 import logging
 import numpy as np
+import os
 import scipy
 import time
 import torch
 import traceback
-
-import io_utils.read_utils as read_utils
-import io_utils.zarr_utils as zarr_utils
+import zarr
 
 from cellpose import transforms
+from dask.array.core import slices_from_chunks, normalize_chunks
+from dask.distributed import as_completed
+from typing import List
 
 from .block_utils import (get_block_crops, get_nblocks,
-                          compute_block_anisotropy, remove_overlaps)
+                          prepare_blocksize, prepare_overlaps,
+                          remove_overlaps)
 
 
 logger = logging.getLogger(__name__)
 
 
 def distributed_eval(
-        image_container_path,
-        image_subpath,
-        image_shape,
-        timeindex,
-        image_channels,
-        model_type,
+        input_zarr: zarr.Array,
+        input_timeindex: int|None,
+        input_channels: List[int]|None,
         blocksize,
         output_dir,
+        labels_zarr,
         dask_client,
-        blocksoverlap=(),
+        blockoverlaps=(),
         mask=None,
         preprocessing_steps=[],
-        diameter=None,
-        spatial_ndims=3,
-        do_3D=True,
-        z_axis=0,
-        channel_axis=None,
-        anisotropy=None,
-        min_size=15,
-        max_size_fraction=0.4,
-        niter=None,
-        normalize=True,
-        normalize_lowhigh=None,
-        normalize_percentile=None,
-        normalize_norm3D=True,
-        normalize_sharpen_radius=0,
-        normalize_smooth_radius=0,
-        normalize_tile_norm_blocksize=0,
-        normalize_tile_norm_smooth3D=1,
-        normalize_invert=False,
-        flow_threshold=0.4,
-        cellprob_threshold=0,
-        stitch_threshold=0,
-        flow3D_smooth=1,
+        cellpose_model_args={},
+        normalize_args={},
+        cellpose_eval_args={},
         label_dist_th=1.0,
-        use_gpu=False,
-        gpu_device=None,
-        gpu_batch_size=8,
 ):
     """
     Evaluate a cellpose model on overlapping blocks of a big image.
@@ -74,20 +52,14 @@ def distributed_eval(
 
     Parameters
     ----------
-    image_container_path : string
-        Path to the image data container. Supported formats are .nrrd, .tif, .tiff, .npy, .n5, and .zarr.
-
-    image_subpath : string
-        Dataset path relative to path.
-
-    image_shape : tuple
-        Image shape in voxels. E.g. (512, 1024, 1024)
+    input_zarr : zarr.Array
+        Image data as a zarr array
 
     timeindex : string
         if the image is a 5-D TCZYX ndarray specify which timeindex to use
 
-    image_channels : sequence[int] | None
-        if the image is a multichannel image specify which channels to use
+    input_channels : sequence[int] | None
+        channels used for segmentation. If not set, it uses all channels
                 
     blocksize : iterable
         The size of blocks in voxels. E.g. [128, 256, 256]
@@ -135,182 +107,101 @@ def distributed_eval(
         ID is the first tuple in the list, the largest segment ID is the last
         tuple in the list.
     """
-    image_ndim = len(image_shape)
+    image_shape = input_zarr.shape
     logger.info((
-        f'Segment {image_container_path}:{image_subpath} '
-        f'Spatial NDIMS: {spatial_ndims}, '
-        f'3D: {do_3D}, '
+        f'3D: {cellpose_eval_args.get("do_3D")}, '
         f'shape: {image_shape}, '
-        f'process blocks: {blocksize} '
-        f'timeindex: {timeindex} '
-        f'image channels {image_channels} '
+        f'process blocks: {blocksize} with {blockoverlaps} overlaps '
+        f'timeindex: {input_timeindex} '
+        f'image channels {input_channels} '
     ))
-    # check blocksoverlap
-    if blocksoverlap is None or blocksoverlap == ():
-        blocksoverlap = [int(s * 0.1) for s in blocksize]
-    elif isinstance(blocksoverlap, (int, float)):
-        blocksoverlap = [int(blocksoverlap)] * image_ndim
-    elif (not (isinstance(blocksoverlap, tuple) or isinstance(blocksoverlap, list)) or
-          len(blocksoverlap) != image_ndim):
-        raise ValueError((
-            f'Invalid blocksoverlap {blocksoverlap} of type {type(blocksoverlap)} '
-            f'- expected number or tuple with same size as image dimensions: {image_ndim}'
-        ))
-    # else leave blocksoverlap as is
-
-    blocksoverlap_arr = np.array(blocksoverlap, dtype=int)
+    diameter = cellpose_eval_args.get('diameter')
+    blocksize = prepare_blocksize(image_shape, blocksize)
+    blockoverlaps = prepare_overlaps(image_shape, blocksize, blockoverlaps,
+                                     default_overlap=2 * diameter if diameter is not None else None)
     block_indices, block_crops = get_block_crops(
-        image_shape, blocksize, blocksoverlap_arr, mask,
-    )
-
-    if spatial_ndims < len(image_shape):
-        # if image has additional axes for channels and/or timepoints
-        # we are only interested in spatial dimensions
-        segmentation_shape = image_shape[-spatial_ndims:]
-        segmentation_block = blocksize[-spatial_ndims:]
-    else:
-        segmentation_shape = image_shape
-        segmentation_block = blocksize
-
-    segmentation_zarr_path = f'{output_dir}/segmentation.zarr'
-    logger.info((
-        f'Create temporary {segmentation_shape} labels '
-        f'at {segmentation_zarr_path} with {segmentation_block} chunks'
-    ))
-
-    labels_zarr = zarr_utils.create_dataset(
-        segmentation_zarr_path,
-        'block_labels',
-        segmentation_shape,
-        segmentation_block,
-        np.uint32,
-        data_store_name='zarr',
+        image_shape, blocksize, blockoverlaps, mask,
     )
 
     logger.info((
         f'Start segmenting: {len(block_indices)} {blocksize} blocks '
-        f'with overlap {blocksoverlap} '
+        f'with overlap {blockoverlaps} '
         f'from a {image_shape} image'
     ))
 
     futures = dask_client.map(
-        process_block,
+        _process_block,
         block_indices,
         block_crops,
-        image_container_path=image_container_path,
-        image_subpath=image_subpath,
-        image_shape=image_shape,
-        data_timeindex=timeindex,
-        data_channels=image_channels,
+        input_zarr=input_zarr,
+        input_timeindex=input_timeindex,
+        input_channels=input_channels,
         blocksize=blocksize,
-        blocksoverlap=blocksoverlap_arr,
-        labels_output_zarr=labels_zarr,
+        blockoverlaps=blockoverlaps,
+        labels_zarr=labels_zarr,
         preprocessing_steps=preprocessing_steps,
-        model_type=model_type,
-        diameter=diameter,
-        spatial_ndims=spatial_ndims,
-        do_3D=do_3D,
-        z_axis=z_axis,
-        channel_axis=channel_axis,
-        anisotropy=anisotropy,
-        min_size=min_size,
-        max_size_fraction=max_size_fraction,
-        niter=niter,
-        normalize=normalize,
-        normalize_lowhigh=normalize_lowhigh,
-        normalize_percentile=normalize_percentile,
-        normalize_norm3D=normalize_norm3D,
-        normalize_sharpen_radius=normalize_sharpen_radius,
-        normalize_smooth_radius=normalize_smooth_radius,
-        normalize_tile_norm_blocksize=normalize_tile_norm_blocksize,
-        normalize_tile_norm_smooth3D=normalize_tile_norm_smooth3D,
-        normalize_invert=normalize_invert,
-        flow_threshold=flow_threshold,
-        cellprob_threshold=cellprob_threshold,
-        stitch_threshold=stitch_threshold,
-        flow3D_smooth=flow3D_smooth,
-        use_gpu=use_gpu,
-        gpu_device=gpu_device,
-        gpu_batch_size=gpu_batch_size,
+        cellpose_model_args=cellpose_model_args,
+        normalize_args=normalize_args,
+        cellpose_eval_args=cellpose_eval_args,
     )
 
     results = dask_client.gather(futures)
     logger.info((
         f'Finished segmenting: {len(block_indices)} {blocksize} blocks '
-        f'with overlap {blocksoverlap}'
+        f'with overlap {blockoverlaps}'
         ' - start label merge process'
     ))
 
-    faces, boxes_, box_ids_ = list(zip(*results))
+    label_block_indices, faces, boxes_, per_block_box_ids = list(zip(*results))
     logger.info((
         'Segmentation results contain '
-        f'faces: {len(faces)}, boxes: {len(boxes_)}, box_ids: {len(box_ids_)}'
+        f'faces: {len(faces)}, boxes: {len(boxes_)}, box_ids: {len(per_block_box_ids)}'
     ))
-
-    segmentation_da = da.from_zarr(labels_zarr)
 
     boxes = [box for sublist in boxes_ for box in sublist]
-    box_ids = np.concatenate(box_ids_).astype(np.uint32)
+    all_box_ids = np.concatenate(per_block_box_ids).astype(np.uint32)
     logger.info((
-        f'Relabel {box_ids.shape} blocks of type {box_ids.dtype} - '
+        f'Relabel {all_box_ids.shape} blocks of type {all_box_ids.dtype} - '
         f'use {len(faces)} faces for merging labels'
     ))
-    if spatial_ndims < len(image_shape):
-        label_block_indices = []
-        for bi in block_indices:
-            label_bi = bi[-spatial_ndims:]
-            label_block_indices.append(tuple(label_bi))
-    else:
-        label_block_indices = block_indices
-
-    new_labeling = determine_merge_relabeling(label_block_indices, faces, box_ids,
-                                              label_dist_th=label_dist_th)
+    new_labeling = _determine_merge_relabeling(label_block_indices, faces, all_box_ids,
+                                               label_dist_th=label_dist_th)
     new_labeling_path = f'{output_dir}/new_labeling.npy'
-    np.save(new_labeling_path, new_labeling)
+    _write_new_labeling(new_labeling_path, new_labeling)
 
-    logger.info(f'Relabel {box_ids.shape} blocks from {new_labeling_path}')
-    relabeled = da.map_blocks(
-        lambda block: np.load(new_labeling_path)[block],
-        segmentation_da,
-        dtype=np.uint32,
-        chunks=segmentation_da.chunks,
+    logger.info(f'Relabel {all_box_ids.shape} blocks from {new_labeling_path}')
+    label_slices = slices_from_chunks(
+        normalize_chunks(labels_zarr.chunks, shape=labels_zarr.shape)
     )
-    merged_boxes = merge_all_boxes(boxes, new_labeling[box_ids.astype(np.int32)])
-    return relabeled, merged_boxes
+    relabel_futures = dask_client.map(
+        _relabel_block,
+        label_slices,
+        new_labeling=new_labeling_path,
+        data=labels_zarr,
+    )
+    relabel_res = True
+    for f, r in as_completed(relabel_futures, with_results=True):
+        if f.cancelled():
+            exc = f.exception()
+            logger.exception(f'Block processing exception: {exc}')
+            relabel_res = False
+        else:
+            relabel_res = relabel_res and r
+    logger.info(f'Relabeling final result: {relabel_res}')
+
+    merged_boxes = _merge_all_boxes(boxes, new_labeling[all_box_ids.astype(np.int32)])
+    return labels_zarr, merged_boxes
 
 
 def local_eval(
-        image_container_path,
-        image_subpath,
-        timeindex,
-        image_channels,
-        model_type,
+        input_image,
+        input_timeindex,
+        input_channels,
+        labels_zarr,
         preprocessing_steps=[],
-        diameter=None,
-        spatial_ndims=3,
-        do_3D=True,
-        z_axis=0,
-        channel_axis=None,
-        anisotropy=None,
-        min_size=15,
-        max_size_fraction=0.4,
-        niter=None,
-        normalize=True,
-        normalize_lowhigh=None,
-        normalize_percentile=None,
-        normalize_norm3D=True,
-        normalize_sharpen_radius=0,
-        normalize_smooth_radius=0,
-        normalize_tile_norm_blocksize=0,
-        normalize_tile_norm_smooth3D=1,
-        normalize_invert=False,
-        flow_threshold=0.4,
-        cellprob_threshold=0,
-        stitch_threshold=0,
-        flow3D_smooth=1,
-        use_gpu=False,
-        gpu_device=None,
-        gpu_batch_size=8,
+        cellpose_model_args={},
+        normalize_args={},
+        cellpose_eval_args={},
 ):
     """
     Evaluate a cellpose model on the entire image
@@ -319,17 +210,14 @@ def local_eval(
 
     Parameters
     ----------
-    image_container_path : string
-        Path to the image data container. Supported formats are .nrrd, .tif, .tiff, .npy, .n5, and .zarr.
+    input_image : ndarray
+        Input image array
 
-    image_subpath : string
-        Dataset path relative to path.
-
-    timeindex : string
+    input_timeindex : string
         if the image is a 5-D TCZYX ndarray specify which timeindex to use
 
-    image_channels : sequence[int] | None
-        if the image is a multichannel image specify which channels to use
+    input_channels : sequence[int] | None
+        channels used for segmentation. If not set, it uses all channels
 
     preprocessing_steps : list of tuples (default: the empty list)
         Optionally apply an arbitrary pipeline of preprocessing steps
@@ -360,94 +248,44 @@ def local_eval(
     is to make the output compatible to the one returned by the distributed version
     
     """
+    image_shape = input_image.shape
     logger.info((
-        f'Segment (locally) {image_container_path}:{image_subpath} '
-        f'Spatial NDIMS: {spatial_ndims}, '
-        f'3D: {do_3D}, '
-        f'timeindex: {timeindex} '
-        f'image channels {image_channels} '
+        f'Segment (locally) {image_shape} image'
+        f'3D: {cellpose_eval_args.get("do_3D")}, '
+        f'timeindex: {input_timeindex} '
+        f'image channels {input_channels} '
     ))
-
-    labels = read_preprocess_and_segment(
-        image_container_path,
-        image_subpath,
-        timeindex,
-        image_channels,
+    labels = _read_preprocess_and_segment(
+        input_image,
+        input_timeindex,
+        input_channels,
         None, # no cropping => entire image
-        preprocessing_steps,
-        # model_kwargs,
-        model_type=model_type,
-        # eval_kwargs
-        diameter=diameter,
-        z_axis=z_axis,
-        channel_axis=channel_axis,
-        spatial_ndims=spatial_ndims,
-        do_3D=do_3D,
-        normalize=normalize,
-        normalize_lowhigh=normalize_lowhigh,
-        normalize_percentile=normalize_percentile,
-        normalize_norm3D=normalize_norm3D,
-        normalize_sharpen_radius=normalize_sharpen_radius,
-        normalize_smooth_radius=normalize_smooth_radius,
-        normalize_tile_norm_blocksize=normalize_tile_norm_blocksize,
-        normalize_tile_norm_smooth3D=normalize_tile_norm_smooth3D,
-        normalize_invert=normalize_invert,
-        min_size=min_size,
-        max_size_fraction=max_size_fraction,
-        niter=niter,
-        anisotropy=anisotropy,
-        flow_threshold=flow_threshold,
-        cellprob_threshold=cellprob_threshold,
-        stitch_threshold=stitch_threshold,
-        flow3D_smooth=flow3D_smooth,
-        use_gpu=use_gpu,
-        gpu_device=gpu_device,
-        gpu_batch_size=gpu_batch_size,
+        preprocessing_steps=preprocessing_steps,
+        cellpose_model_args=cellpose_model_args,
+        normalize_args=normalize_args,
+        cellpose_eval_args=cellpose_eval_args,
     )
     _, nlabels = np.unique(labels, return_counts=True)
-    # create the dask array as a single chunk
-    return da.from_array(labels,
-                         chunks=(1,) * spatial_ndims), nlabels
+    if labels.ndim == labels_zarr.ndim:
+        labels_zarr[...] = labels
+    else:
+        labels_zarr[0,...] = labels
+    return labels_zarr, nlabels
 
 
-def process_block(
+def _process_block(
     block_index,
     crop,
-    image_container_path,
-    image_subpath,
-    image_shape,
-    data_timeindex,
-    data_channels,
+    input_zarr,
+    input_timeindex,
+    input_channels,
     blocksize,
-    blocksoverlap,
-    labels_output_zarr,
+    blockoverlaps,
+    labels_zarr,
     preprocessing_steps=[],
-    model_type=None,
-    diameter=None,
-    min_size=15,
-    max_size_fraction=0.4,
-    niter=None,
-    anisotropy=None,
-    spatial_ndims=3,
-    do_3D=True,
-    normalize=True,
-    normalize_lowhigh=None,
-    normalize_percentile=None,
-    normalize_norm3D=True,
-    normalize_sharpen_radius=0,
-    normalize_smooth_radius=0,
-    normalize_tile_norm_blocksize=0,
-    normalize_tile_norm_smooth3D=1,
-    normalize_invert=False,
-    z_axis=0,
-    channel_axis=None,
-    flow_threshold=0.4,
-    cellprob_threshold=0,
-    stitch_threshold=0,
-    flow3D_smooth=1,
-    use_gpu=False,
-    gpu_device=None,
-    gpu_batch_size=8,
+    cellpose_model_args={},
+    normalize_args={},
+    cellpose_eval_args={},
 ):
     """
     Preprocess and segment one block, of many, with eventual merger
@@ -519,143 +357,127 @@ def process_block(
         f'RUNNING BLOCK: {block_index}, '
         f'REGION: {crop}, '
         f'blocksize: {blocksize}, '
-        f'blocksoverlap: {blocksoverlap}, '
-        f'model_type: {model_type}, '
-        f'spatial_ndims: {spatial_ndims}, '
-        f'do_3D: {do_3D}, '
-        f'diameter: {diameter}, '
-        f'z_axis: {z_axis}, '
-        f'channel_axis: {channel_axis}, '
-        f'min_size: {min_size}, '
-        f'max_size_fraction: {max_size_fraction}, '
-        f'niter: {niter}, '
-        f'anisotropy: {anisotropy}, '
-        f'flow_threshold: {flow_threshold}, '
-        f'cellprob_threshold: {cellprob_threshold}, '
-        f'stitch_threshold: {stitch_threshold}, '
-        f'flow3D_smooth: {flow3D_smooth}',
-        f'gpu_batch_size: {gpu_batch_size}, '
+        f'blocksoverlap: {blockoverlaps}, '
+        f'cellpose eval opts: {cellpose_eval_args}, '
+        f'cellpose model opts: {cellpose_model_args}, '
     ))
-    segmentation = read_preprocess_and_segment(
-        image_container_path, 
-        image_subpath,
-        data_timeindex,
-        data_channels,
+    segmentation = _read_preprocess_and_segment(
+        input_zarr,
+        input_timeindex,
+        input_channels,
         crop, 
-        preprocessing_steps,
-        model_type=model_type,
-        spatial_ndims=spatial_ndims,
-        do_3D=do_3D,
-        normalize=normalize,
-        normalize_lowhigh=normalize_lowhigh,
-        normalize_percentile=normalize_percentile,
-        normalize_norm3D=normalize_norm3D,
-        normalize_sharpen_radius=normalize_sharpen_radius,
-        normalize_smooth_radius=normalize_smooth_radius,
-        normalize_tile_norm_blocksize=normalize_tile_norm_blocksize,
-        normalize_tile_norm_smooth3D=normalize_tile_norm_smooth3D,
-        normalize_invert=normalize_invert,
-        z_axis=z_axis,
-        channel_axis=channel_axis,
-        diameter=diameter,
-        min_size=min_size,
-        max_size_fraction=max_size_fraction,
-        niter=niter,
-        anisotropy=anisotropy,
-        flow_threshold=flow_threshold,
-        cellprob_threshold=cellprob_threshold,
-        stitch_threshold=stitch_threshold,
-        flow3D_smooth=flow3D_smooth,
-        use_gpu=use_gpu,
-        gpu_device=gpu_device,
-        gpu_batch_size=gpu_batch_size,
+        preprocessing_steps=preprocessing_steps,
+        cellpose_model_args=cellpose_model_args,
+        normalize_args=normalize_args,
+        cellpose_eval_args=cellpose_eval_args,
     )
+    seg_ndim = segmentation.ndim
     # labels are single channel so if the input was multichannel remove the channel coords
-    labels_image_shape = image_shape[-spatial_ndims:]
-    labels_block_index = block_index[-spatial_ndims:]
-    labels_coords = crop[-spatial_ndims:]
-    labels_overlaps = blocksoverlap[-spatial_ndims:]
-    labels_blocksize = blocksize[-spatial_ndims:]
+    labels_shape = labels_zarr.shape[-seg_ndim:]
+    labels_block_index = block_index[-seg_ndim:]
+    labels_coords = crop[-seg_ndim:]
+    labels_overlaps = blockoverlaps[-seg_ndim:]
+    labels_blocksize = blocksize[-seg_ndim:]
 
     logger.debug((
-        f'adjusted labels image shape to {labels_image_shape} '
+        f'adjusted labels image shape to {labels_shape} '
         f'labels block index to {labels_block_index} '
         f'labels block coords to {labels_coords} '
         f'labels block overlaps to {labels_overlaps} '
         f'labels block size to {labels_blocksize} '
     ))
-    logger.debug(f'Segmented block shape before removing overlaps: {segmentation.shape}')
+    logger.info(f'Remove {labels_overlaps} overlaps from {segmentation.shape} labels')
     segmentation, labels_coords = remove_overlaps(segmentation, labels_coords, labels_overlaps, labels_blocksize)
-    boxes = bounding_boxes_in_global_coordinates(segmentation, labels_coords)
-    nblocks = get_nblocks(labels_image_shape, labels_blocksize)
-    segmentation, remap = global_segment_ids(segmentation, labels_block_index, nblocks)
+
+    boxes = _bounding_boxes_in_global_coordinates(segmentation, labels_coords)
+    nblocks = get_nblocks(labels_shape, labels_blocksize)
+    segmentation, remap = _global_segment_ids(segmentation, labels_block_index, nblocks)
     if remap[0] == 0:
         remap = remap[1:]
-
-    labels_output_zarr[tuple(labels_coords)] = segmentation
-
-    faces = block_faces(segmentation)
-    return faces, boxes, remap
+    if labels_zarr.ndim != seg_ndim:
+        labels_zarr_coords = (0,)*(labels_zarr.ndim-seg_ndim)+tuple(labels_coords)
+        labels_zarr[labels_zarr_coords] = segmentation
+    else:
+        labels_zarr[tuple(labels_coords)] = segmentation
+    faces = _block_faces(segmentation)
+    return labels_block_index, faces, boxes, remap
 
 
 # ----------------------- component functions ---------------------------------#
-def read_preprocess_and_segment(
-    image_container_path,
-    image_subpath,
-    data_timeindex,
-    data_channels,
+def _read_preprocess_and_segment(
+    input_zarr,
+    input_timeindex,
+    input_channels,
     crop,
-    preprocessing_steps,
-    # model_kwargs,
-    model_type=None,
-    # eval_kwargs
-    diameter=None,
-    z_axis=0,
-    channel_axis=None,
-    spatial_ndims=3,
-    do_3D=True,
-    normalize=True,
-    normalize_lowhigh=None,
-    normalize_percentile=None,
-    normalize_norm3D=True,
-    normalize_sharpen_radius=0,
-    normalize_smooth_radius=0,
-    normalize_tile_norm_blocksize=0,
-    normalize_tile_norm_smooth3D=1,
-    normalize_invert=False,
-    min_size=15,
-    max_size_fraction=0.4,
-    niter=None,
-    anisotropy=None,
-    flow_threshold=0.4,
-    cellprob_threshold=0,
-    stitch_threshold=0,
-    flow3D_smooth=1,
-    use_gpu=False,
-    gpu_device=None,
-    gpu_batch_size=8,
+    preprocessing_steps=[],
+    cellpose_model_args={},
+    normalize_args={},
+    cellpose_eval_args={},
 ):
     """Read block from zarr array, run all preprocessing steps, run cellpose"""
-    logger.info((
-        f'Reading {crop} block from '
-        f'{image_container_path}:{image_subpath} '
-        f'timeindex {data_timeindex} '
-        f'channels {data_channels} '
-    ))
-    image_block, block_attrs = read_utils.open(image_container_path, image_subpath,
-                                               data_timeindex=data_timeindex,
-                                               data_channels=data_channels,
-                                               block_coords=crop)
-    # at this point the image block should be in memory
-    # when local processing is used it is possible 
-    # that the block is not in memory yet and it is still a zarr array,
-    # so we force it in memory
-    if image_block is not None and not isinstance(image_block, np.ndarray):
-        image_block = image_block[...]
 
-    if anisotropy is None or anisotropy == 1:
-        # try to compute it from block's attributes
-        anisotropy = compute_block_anisotropy(block_attrs)
+    input_channel_axis = cellpose_eval_args.get('channel_axis')
+
+    block_coords_list = [c for c in crop]
+    if input_channel_axis is not None and input_channels:
+        block_coords_list[input_channel_axis] = input_channels
+
+    if input_timeindex is not None:
+        # this should only be set for OME images if timepoints are present
+        # and timepoints if present are the first dimension
+        block_coords_list[0] = input_timeindex
+
+    block_coords = tuple(block_coords_list)
+    logger.info((
+        f'Reading {block_coords} block from the input zarr '
+        f'based on the input crop: {crop} '
+        f'timeindex {input_timeindex} '
+        f'channels {input_channels} '
+        f'input channel axis {input_channel_axis} '
+    ))
+
+    image_block = input_zarr[block_coords]
+    block_shape = image_block.shape
+    block_ndim = image_block.ndim
+
+    do_3D = cellpose_eval_args.get('do_3D', False)
+    input_z_axis = cellpose_eval_args.get('z_axis')
+    spatial_dims = 3 if do_3D else 2
+
+    if input_z_axis is not None:
+        # z axis is specified
+        if input_timeindex is not None and input_z_axis > 0:
+            z_axis = input_z_axis - 1
+        else:
+            z_axis = input_z_axis
+    else:
+        # z_axis is not specified
+        if not do_3D:
+            z_axis = None
+        else:
+            if block_ndim >= spatial_dims:
+                z_axis = -3
+            else:
+                raise ValueError(f'Cannot handle {spatial_dims}-D segmentation for block of shape {block_shape}')
+
+    if input_channel_axis is not None:
+        # channel axis is specified
+        if input_timeindex is not None and input_channel_axis > 0:
+            channel_axis = input_channel_axis - 1
+        else:
+            channel_axis = input_channel_axis
+    else:
+        # channel axis is not specified
+        if block_ndim == spatial_dims:
+            # append a dimension for the channel if channel dimension is missing
+            new_block_shape = (1,) + (block_shape)
+            image_block = np.reshape(image_block, new_block_shape)
+            channel_axis = 0 # channel is the first dimension
+        else:
+            # assume the channel axis is before the spatial axes
+            channel_axis = block_ndim - spatial_dims - 1
+    cellpose_eval_args['channel_axis'] = channel_axis
+    cellpose_eval_args['z_axis'] = z_axis
 
     start_time = time.time()
 
@@ -663,6 +485,40 @@ def read_preprocess_and_segment(
         logger.debug(f'Apply preprocessing step: {pp_step}')
         image_block = pp_step[0](image_block, **pp_step[1])
 
+    model = _get_segmentation_model(cellpose_model_args)
+
+    if normalize_args.get('normalize'):
+        logger.info(f'Normalize {image_block.shape} block at {crop} params: {normalize_args}')
+        image_block = transforms.normalize_img(image_block, axis=channel_axis,
+                                               **normalize_args)
+    logger.info(f'Eval {image_block.shape} block at {crop} args: {cellpose_eval_args}')
+    try:
+        labels = model.eval(image_block, **cellpose_eval_args)[0].astype(np.uint32)
+    except Exception as e:
+        logger.error((
+            f'ERROR eval {image_block.shape} block at {crop} args: {cellpose_eval_args} '
+            f'err={e} {traceback.format_exception(e)}'
+        ))
+        raise e
+
+    end_time = time.time()
+    unique_labels = np.unique(labels)
+    logged_block_message = (f'for block: {crop}' 
+                            if crop is not None
+                            else 'for entire image')
+    logger.info((
+        'Finished model eval '
+        f'{logged_block_message} => '
+        f'found {len(unique_labels)} unique labels '
+        f'in the {labels.shape} image '
+        f'in {end_time-start_time}s '
+    ))
+    return labels
+
+
+def _get_segmentation_model(cellpose_model_args):
+    use_gpu = cellpose_model_args.get('use_gpu', True)
+    gpu_device = cellpose_model_args.get('gpu_device', 0)
     if use_gpu:
         available_gpus = torch.cuda.device_count()
         logger.info(f'Found {available_gpus} GPUs')
@@ -690,110 +546,18 @@ def read_preprocess_and_segment(
         else:
             segmentation_device, gpu = cellpose.models.assign_device(gpu=use_gpu,
                                                                      device=gpu_device)
+
     else:
         segmentation_device, gpu = cellpose.models.assign_device(gpu=use_gpu,
                                                                  device=gpu_device)
-    logger.info(f'Segmentation device for {image_block.shape} block {crop}: {segmentation_device}:{gpu}')
-    model = cellpose.models.CellposeModel(gpu=gpu,
-                                          pretrained_model=model_type,
-                                          device=segmentation_device)
-    normalize_params = {
-        "normalize": normalize,
-        "lowhigh": ((int(normalize_lowhigh[0]), int(normalize_lowhigh[1]))
-                       if normalize_lowhigh is not None else None),
-        "percentile": ((int(normalize_percentile[0]), int(normalize_percentile[1]))
-                       if normalize_percentile is not None else None),
-        "norm3D": normalize_norm3D,
-        "sharpen_radius": normalize_sharpen_radius,
-        "smooth_radius": normalize_smooth_radius,
-        "tile_norm_blocksize": normalize_tile_norm_blocksize,
-        "tile_norm_smooth3D": normalize_tile_norm_smooth3D,
-        "invert": normalize_invert,
-    }
-    if spatial_ndims == len(image_block.shape):
-        # if 3D and the block has exactly 3 dimensions
-        # or in the case of 2D segmentation the block has exactly 2 dimensions
-        # reshape it to include a dimension for the channel
-        new_block_shape = (1,) + image_block.shape
-        logger.debug(f'Reshape {type(image_block)} block of {image_block.shape} to {new_block_shape}')
-        image_block = image_block.reshape(new_block_shape)
-
-    if normalize:
-        logger.info(f'Normalize {image_block.shape} block at {crop} params: {normalize_params}')
-        image_block = transforms.normalize_img(image_block, axis=channel_axis,
-                                               **normalize_params)
-    logger.info((
-        f'Eval {image_block.shape} block at {crop} args: '
-        f'diameter={diameter}, '
-        f'min_size={min_size}, '
-        f'max_size_fraction={max_size_fraction}, '
-        f'niter={niter}, '
-        f'anisotropy={anisotropy}, '
-        f'ndims={spatial_ndims}, '
-        f'do_3D={do_3D}, '
-        f'z_axis={z_axis}, '
-        f'normalize=False, '
-        f'channel_axis={channel_axis}, '
-        f'flow_threshold={flow_threshold}, '
-        f'cellprob_threshold={cellprob_threshold}, '
-        f'stitch_threshold={stitch_threshold}, '
-        f'flow3D_smooth={flow3D_smooth}, '
-        f'batch_size={gpu_batch_size}, '
-    ))
-    try:
-        labels = model.eval(image_block,
-                        diameter=diameter,
-                        min_size=min_size,
-                        max_size_fraction=max_size_fraction,
-                        niter=niter,
-                        anisotropy=anisotropy,
-                        do_3D=do_3D,
-                        z_axis=z_axis,
-                        normalize=False,
-                        channel_axis=channel_axis,
-                        flow_threshold=flow_threshold,
-                        cellprob_threshold=cellprob_threshold,
-                        stitch_threshold=stitch_threshold,
-                        flow3D_smooth=flow3D_smooth,
-                        batch_size=gpu_batch_size,
-                        )[0].astype(np.uint32)
-    except Exception as e:
-        logger.error((
-            f'ERROR eval {image_block.shape} block at {crop} args: '
-            f'diameter={diameter}, '
-            f'min_size={min_size}, '
-            f'max_size_fraction={max_size_fraction}, '
-            f'niter={niter}, '
-            f'anisotropy={anisotropy}, '
-            f'ndims={spatial_ndims}, '
-            f'do_3D={do_3D}, '
-            f'z_axis={z_axis}, '
-            f'normalize=False, '
-            f'channel_axis={channel_axis}, '
-            f'flow_threshold={flow_threshold}, '
-            f'cellprob_threshold={cellprob_threshold}, '
-            f'stitch_threshold={stitch_threshold}, '
-            f'flow3D_smooth={flow3D_smooth}, '
-            f'batch_size={gpu_batch_size}, '
-            f'err={e} {traceback.format_exception(e)}'
-        ))
-        raise e
-
-    end_time = time.time()
-    unique_labels = np.unique(labels)
-    logged_block_message = (f'for block: {crop}' 
-                            if crop is not None
-                            else 'for entire image')
-    logger.info((
-        'Finished model eval '
-        f'{logged_block_message} => '
-        f'found {len(unique_labels)} unique labels '
-        f'in {end_time-start_time}s '
-    ))
-    return labels
+    return cellpose.models.CellposeModel(
+        gpu=gpu,
+        device=segmentation_device,
+        pretrained_model=cellpose_model_args.get('pretrained_model'),
+    )
 
 
-def bounding_boxes_in_global_coordinates(segmentation, crop):
+def _bounding_boxes_in_global_coordinates(segmentation, crop):
     """
     bounding boxes (tuples of slices) are super useful later
     best to compute them now while things are distributed
@@ -809,7 +573,7 @@ def bounding_boxes_in_global_coordinates(segmentation, crop):
     return boxes
 
 
-def global_segment_ids(segmentation, block_index, nblocks):
+def _global_segment_ids(segmentation, block_index, nblocks):
     """
     Pack the block index into the segment IDs so they are
     globally unique. Everything gets remapped to [1..N] later.
@@ -819,7 +583,7 @@ def global_segment_ids(segmentation, block_index, nblocks):
     """
     unique, unique_inverse = np.unique(segmentation, return_inverse=True)
     logger.debug((
-        f'Block {block_index} out of {nblocks} '
+        f'Block {block_index} out of {nblocks} blocks '
         f'- has {len(unique)} unique labels '
     ))
     p = str(np.ravel_multi_index(block_index, nblocks))
@@ -831,7 +595,7 @@ def global_segment_ids(segmentation, block_index, nblocks):
     return segmentation, remap
 
 
-def block_faces(segmentation):
+def _block_faces(segmentation):
     """Slice faces along every axis"""
     faces = []
     for iii in range(segmentation.ndim):
@@ -844,15 +608,15 @@ def block_faces(segmentation):
     return faces
 
 
-def determine_merge_relabeling(block_indices, faces, labels,
+def _determine_merge_relabeling(block_indices, faces, labels,
                                label_dist_th=1.0):
     """Determine boundary segment mergers, remap all label IDs to merge
        and put all label IDs in range [1..N] for N global segments found"""
-    faces = adjacent_faces(block_indices, faces)
+    faces = _adjacent_faces(block_indices, faces)
     logger.debug(f'Determine relabeling for {labels.shape} of type {labels.dtype}')
     used_labels = labels.astype(int)
     label_range = int(np.max(used_labels) + 1)
-    label_groups = block_face_adjacency_graph(faces, label_range,
+    label_groups = _block_face_adjacency_graph(faces, label_range,
                                               label_dist_th=label_dist_th)
     logger.debug((
         f'Build connected components for {label_groups.shape} label groups'
@@ -871,10 +635,10 @@ def determine_merge_relabeling(block_indices, faces, labels,
     return new_labeling
 
 
-def adjacent_faces(block_indices, faces):
+def _adjacent_faces(block_indices, faces):
     """Find faces which touch and pair them together in new data structure"""
     face_pairs = []
-    faces_index_lookup = {a: b for a, b in zip(block_indices, faces)}
+    faces_index_lookup = {bi: f for bi, f in zip(block_indices, faces)}
     for block_index in block_indices:
         for ax in range(len(block_index)):
             neighbor_index = np.array(block_index)
@@ -889,7 +653,7 @@ def adjacent_faces(block_indices, faces):
     return face_pairs
 
 
-def block_face_adjacency_graph(faces, labels_range, label_dist_th=1.0):
+def _block_face_adjacency_graph(faces, labels_range, label_dist_th=1.0):
     """
     Shrink labels in face plane, then find which labels touch across the face boundary
     """
@@ -899,8 +663,8 @@ def block_face_adjacency_graph(faces, labels_range, label_dist_th=1.0):
     for face in faces:
         sl0 = tuple(slice(0, 1) if d == 2 else slice(None) for d in face.shape)
         sl1 = tuple(slice(1, 2) if d == 2 else slice(None) for d in face.shape)
-        a = shrink_labels(face[sl0], label_dist_th)
-        b = shrink_labels(face[sl1], label_dist_th)
+        a = _shrink_labels(face[sl0], label_dist_th)
+        b = _shrink_labels(face[sl1], label_dist_th)
         face = np.concatenate((a, b), axis=np.argmin(a.shape))
         mapped = di_ndmeasure._utils._label._across_block_label_grouping(
             face,
@@ -915,7 +679,7 @@ def block_face_adjacency_graph(faces, labels_range, label_dist_th=1.0):
     return csr_mat
 
 
-def shrink_labels(plane, threshold):
+def _shrink_labels(plane, threshold):
     """
     Shrink labels in plane by some distance from their boundary
     """
@@ -927,23 +691,21 @@ def shrink_labels(plane, threshold):
     return shrunk_labels.reshape(plane.shape)
 
 
-def merge_all_boxes(boxes, box_ids):
-    """
-    Merge all boxes that map to the same box_ids
-    """
+def _merge_all_boxes(boxes, box_ids):
+    """Merge all boxes that map to the same box_ids"""
     merged_boxes = []
     boxes_array = np.array(boxes, dtype=object)
     for iii in np.unique(box_ids):
         merge_indices = np.argwhere(box_ids == iii).squeeze()
         if merge_indices.shape:
-            merged_box = merge_boxes(boxes_array[merge_indices])
+            merged_box = _merge_boxes(boxes_array[merge_indices])
         else:
             merged_box = boxes_array[merge_indices]
         merged_boxes.append(merged_box)
     return merged_boxes
 
 
-def merge_boxes(boxes):
+def _merge_boxes(boxes):
     """Take union of two or more parallelpipeds"""
     box_union = boxes[0]
     for iii in range(1, len(boxes)):
@@ -954,3 +716,20 @@ def merge_boxes(boxes):
             local_union.append(slice(start, stop))
         box_union = tuple(local_union)
     return box_union
+
+
+def _write_new_labeling(new_labeling_path, new_labeling):
+    new_labeling_dir = os.path.dirname(new_labeling_path)
+    os.makedirs(new_labeling_dir, exist_ok=True)
+    np.save(new_labeling_path, new_labeling)
+
+
+def _relabel_block(block_coords, new_labeling=None, data=[]):
+    if new_labeling is None:
+        return False
+    else:
+        logger.info(f'Relabel block: {block_coords}')
+        block = data[block_coords]
+        new_labeling_array = np.load(new_labeling)
+        data[block_coords] = new_labeling_array[block]
+        return True
