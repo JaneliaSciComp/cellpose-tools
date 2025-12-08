@@ -50,7 +50,7 @@ def write_zarray_as(zarr_arr, container_path, dataset_subpath):
 
 
 def _write_as_tiff(zarr_array, output_path):
-    t, z, z, _, _ = zarr_array.shape
+    t, c, z, _, _ = zarr_array.shape
     metadata = {
         "axes": "TCZYX",
     }
