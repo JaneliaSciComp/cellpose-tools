@@ -1,7 +1,6 @@
 """
 This is code contributed by Greg Fleishman to run Cellpose on a Dask cluster.
 """
-import cellpose.models
 import dask_image.ndmeasure as di_ndmeasure
 import logging
 import numpy as np
@@ -13,6 +12,7 @@ import traceback
 import zarr
 
 from cellpose import transforms
+from cellpose.models import assign_device, CellposeModel
 from dask.array.core import slices_from_chunks, normalize_chunks
 from dask.distributed import as_completed
 from typing import List
@@ -528,8 +528,7 @@ def _get_segmentation_model(cellpose_model_args):
             for gpui in range(available_gpus):
                 try:
                     logger.debug(f'Try GPU: {gpui}')
-                    segmentation_device, gpu = cellpose.models.assign_device(gpu=use_gpu,
-                                                                             device=gpui)
+                    segmentation_device, gpu = assign_device(gpu=use_gpu, device=gpui)
                     logger.debug(f'Result for GPU: {gpui} => {segmentation_device}:{gpu}')
                     if gpu:
                         break
@@ -544,13 +543,11 @@ def _get_segmentation_model(cellpose_model_args):
                 except Exception as e:
                     logger.warning(f'cuda:{gpui} present but not usable: {e}')
         else:
-            segmentation_device, gpu = cellpose.models.assign_device(gpu=use_gpu,
-                                                                     device=gpu_device)
+            segmentation_device, gpu = assign_device(gpu=use_gpu, device=gpu_device)
 
     else:
-        segmentation_device, gpu = cellpose.models.assign_device(gpu=use_gpu,
-                                                                 device=gpu_device)
-    return cellpose.models.CellposeModel(
+        segmentation_device, gpu = assign_device(gpu=use_gpu, device=gpu_device)
+    return CellposeModel(
         gpu=gpu,
         device=segmentation_device,
         pretrained_model=cellpose_model_args.get('pretrained_model'),
