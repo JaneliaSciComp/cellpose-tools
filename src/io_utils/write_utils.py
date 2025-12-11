@@ -72,9 +72,8 @@ def _write_zarr_to_2D_tiff(zarr_array, output_path):
 def _write_zarr_to_3D_tiff(zarr_array, output_path):
     z, _, _ = zarr_array.shape
     with tifffile.TiffWriter(output_path, bigtiff=True) as tw:
-        for ci in range(c):
-            for zi in range(z):
-                tw.write(zarr_array[zi])
+        for zi in range(z):
+            tw.write(zarr_array[zi])
 
 
 def _write_zarr_to_4D_tiff(zarr_array, output_path):
