@@ -157,7 +157,7 @@ def distributed_eval(
         'Segmentation results contain '
         f'faces: {len(faces)}, boxes: {len(boxes_)}, box_ids: {len(per_block_box_ids)}'
     ))
-
+    # merge labels
     boxes = [box for sublist in boxes_ for box in sublist]
     all_box_ids = np.concatenate(per_block_box_ids).astype(np.uint32)
     logger.info((

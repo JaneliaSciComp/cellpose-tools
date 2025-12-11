@@ -41,7 +41,7 @@ def write_zarray_as(zarr_arr, container_path, dataset_subpath):
     container_ext = path_comps[1]
     if container_ext == '.tif' or container_ext == '.tiff':
         logger.info(f'Persist data as tiff {container_path} ({real_container_path})')
-        _write_as_tiff(zarr_arr, container_path)
+        _write_zarr_to_tiff(zarr_arr, container_path)
     else:
         logger.info((
             f'Cannot persist data using {container_path} '
@@ -49,8 +49,50 @@ def write_zarray_as(zarr_arr, container_path, dataset_subpath):
         ))
 
 
-def _write_as_tiff(zarr_array, output_path):
-    _, _, z, _, _ = zarr_array.shape
+def _write_zarr_to_tiff(zarr_array, output_path):
+    array_shape = zarr_array.shape
+    match len(array_shape):
+        case 2:
+            _write_zarr_to_2D_tiff(zarr_array, output_path)
+        case 3:
+            _write_zarr_to_3D_tiff(zarr_array, output_path)
+        case 4:
+            _write_zarr_to_4D_tiff(zarr_array, output_path)
+        case 5:
+            _write_zarr_to_5D_tiff(zarr_array, output_path)
+        case _:
+            raise ValueError(f'Cannot save as tiff {array_shape} arrays. It only up to 5D zarr arrays')
+
+
+def _write_zarr_to_2D_tiff(zarr_array, output_path):
+    with tifffile.TiffWriter(output_path) as tw:
+        tw.write(zarr_array[...])
+
+
+def _write_zarr_to_3D_tiff(zarr_array, output_path):
+    z, _, _ = zarr_array.shape
+    with tifffile.TiffWriter(output_path, bigtiff=True) as tw:
+        for ci in range(c):
+            for zi in range(z):
+                tw.write(zarr_array[zi])
+
+
+def _write_zarr_to_4D_tiff(zarr_array, output_path):
+    c, z, _, _ = zarr_array.shape
+    metadata = {
+        "axes": "CZYX",
+    }
+    with tifffile.TiffWriter(output_path, bigtiff=True) as tw:
+        for ci in range(c):
+            for zi in range(z):
+                tw.write(
+                    zarr_array[ci, zi],  # (y, x) plane
+                    metadata=metadata if (ci,zi)==(0,0,0) else None
+                )
+
+
+def _write_zarr_to_5D_tiff(zarr_array, output_path):
+    t, c, z, _, _ = zarr_array.shape
     metadata = {
         "axes": "TCZYX",
     }
