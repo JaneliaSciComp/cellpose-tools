@@ -67,7 +67,7 @@ def _define_args():
     args_parser.add_argument('-i','--input',
                              dest='input',
                              type=str,
-                             required=True,
+                             required=False,
                              help = "Input image to be segmented - it can be a directory path for zarr or N5 or file path for tiff")
     args_parser.add_argument('--input-subpath', '--input_subpath',
                              dest='input_subpath',
@@ -100,7 +100,7 @@ def _define_args():
 
     args_parser.add_argument('-o','--output',
                              dest='output',
-                             required=True,
+                             required=False,
                              type=str,
                              help = "output image name - it can be a directory path for zarr or N5 or file path for TIFF")
     args_parser.add_argument('--output-subpath', '--output_subpath',
@@ -180,11 +180,13 @@ def _define_args():
     distributed_args = args_parser.add_argument_group("Distributed Arguments")
     distributed_args.add_argument('--dask-scheduler', '--dask_scheduler',
                                   dest='dask_scheduler',
-                                  type=str, default=None,
+                                  type=str,
+                                  default=None,
                                   help='The TCP/IP address (tcp://x.x.x.x:port) of the Dask scheduler used for distributing cellpose over an existing dask cluster')
     distributed_args.add_argument('--dask-config', '--dask_config',
                                   dest='dask_config',
-                                  type=str, default=None,
+                                  type=str,
+                                  default=None,
                                   help='Dask configuration yaml file')
     distributed_args.add_argument('--local-dask-workers', '--local_dask_workers',
                                   dest='local_dask_workers',
@@ -193,9 +195,12 @@ def _define_args():
                                   help='Number of workers when using a local cluster')
     distributed_args.add_argument('--worker-cpus', '--worker_cpus',
                                   dest='worker_cpus',
-                                  type=int, default=1,
+                                  type=int,
+                                  default=1,
                                   help='Number of cpus allocated to a dask worker')
-    distributed_args.add_argument('--device', required=False, default='0', type=str,
+    distributed_args.add_argument('--device',
+                                  type=str,
+                                  default='0',
                                   dest='device',
                                   help='which device to use, use an integer for torch, or mps for M1')    
     distributed_args.add_argument('--models-dir', '--models_dir',
@@ -584,6 +589,12 @@ def _main():
     try:
         if args.version:
             _print_version_and_exit()
+
+        # validate args
+        if not args.input:
+            args_parser.error("--input is required")
+        if not args.output:
+            args_parser.error("--output is required")
 
         # prepare logging
         global logger
