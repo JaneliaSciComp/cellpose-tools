@@ -16,7 +16,7 @@ dependencies = [
     "torch==2.9.1",
     "torchvision==0.24.1",
     "zarr>3,<4",
-    "zarr-tools @ git+https://github.com/JaneliaSciComp/zarr-tools.git@fbd294d",
+    "zarr-tools @ git+https://github.com/JaneliaSciComp/zarr-tools.git@14a289c",
 ]
 
 [tool.setuptools.packages.find]
