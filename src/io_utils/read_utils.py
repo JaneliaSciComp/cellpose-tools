@@ -9,7 +9,7 @@ from zarr_tools.io.zarr_io import open_zarr_store
 logger = logging.getLogger(__name__)
 
 
-def open_array(array_container_path:str, array_subpath: str):
+def open_array(array_container_path:str, array_subpath:str):
     path_comps = os.path.splitext(array_container_path)
     array_type = path_comps[1].strip('.')
 
