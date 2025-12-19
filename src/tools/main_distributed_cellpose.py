@@ -273,9 +273,9 @@ def _run_segmentation(args):
         dask_client.register_plugin(worker_config, name='WorkerConfig')
 
     input_image_attrs = read_array_attrs(args.input, args.input_subpath)
-    image_ndim = input_image_attrs['array_ndim']
-    image_shape = input_image_attrs['array_shape']
-    image_dtype = input_image_attrs['array_dtype']
+    input_image_ndim = input_image_attrs['array_ndim']
+    input_image_shape = input_image_attrs['array_shape']
+    input_image_dtype = input_image_attrs['array_dtype']
 
     if args.voxel_spacing is not None:
         # voxel spacing is specified in the command line, so use this value
@@ -289,7 +289,7 @@ def _run_segmentation(args):
     else:
         voxel_spacing = (1,) * (3 if args.do_3D else 2)
 
-    logger.info(f'Image data shape/dim/dtype: {image_shape}, {image_ndim}, {image_dtype}')
+    logger.info(f'Image data shape/dim/dtype: {input_image_shape}, {input_image_ndim}, {input_image_dtype}')
     
     if args.output:
         try:
@@ -372,7 +372,7 @@ def _run_segmentation(args):
                     # process_blocksize are specified (as X,Y,Z) so revert them
                     process_blocksize = args.process_blocksize[::-1]
                 else:
-                    process_blocksize = image_shape # process the whole image
+                    process_blocksize = input_image_shape # process the whole image
 
                 if args.blocks_overlaps is not None:
                     # blocks_overlaps are also specified as dX,dY,dZ overlaps 

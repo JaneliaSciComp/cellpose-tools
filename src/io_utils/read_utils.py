@@ -9,16 +9,16 @@ from zarr_tools.io.zarr_io import open_zarr_store
 logger = logging.getLogger(__name__)
 
 
-def open_array(array_container_path:str, array_subpath:str):
-    path_comps = os.path.splitext(array_container_path)
+def open_array(container_path:str, subpath:str):
+    path_comps = os.path.splitext(container_path)
     array_type = path_comps[1].strip('.')
 
     if array_type == 'tif' or array_type == 'tiff':
-        return _open_tiff_array(array_container_path)
+        return _open_tiff_array(container_path)
     elif array_type == 'n5' or array_type == 'zarr':
-        return zarr.open_array(store=array_container_path, path=array_subpath)
+        return zarr.open_array(store=container_path, path=subpath)
     else:
-        raise ValueError(f'Cannot handle {array_container_path}:{array_subpath}')
+        raise ValueError(f'Cannot handle {container_path}:{subpath}')
 
 
 def read_array_attrs(container_path:str, subpath:str) -> dict:
