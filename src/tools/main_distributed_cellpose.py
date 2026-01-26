@@ -248,6 +248,11 @@ def _run_segmentation(args):
         models_dir = None
 
 
+    if models_dir is not None and args.segmentation_model:
+        pretrained_model = os.path.join(models_dir, args.segmentation_model)
+    else:
+        pretrained_model = args.segmentation_model
+
     logger.info(f'Download cellpose models to {models_dir} ({os.environ.get('CELLPOSE_LOCAL_MODELS_PATH')})')
     download_cellpose_models(models_dir, args.segmentation_model)
 
@@ -335,7 +340,7 @@ def _run_segmentation(args):
             cellpose_model_args = {
                 'use_gpu': args.use_gpu,
                 'gpu_device': args.gpu_device,
-                'pretrained_model': args.segmentation_model,
+                'pretrained_model': pretrained_model,
             }
             normalize_args = {
                 'normalize': not args.no_norm,
