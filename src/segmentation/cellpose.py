@@ -517,6 +517,7 @@ def _read_preprocess_and_segment(
 
 
 def _get_segmentation_model(cellpose_model_args):
+    logger.info(f'Get segmentation model: {cellpose_model_args}')
     use_gpu = cellpose_model_args.get('use_gpu', True)
     gpu_device = cellpose_model_args.get('gpu_device', 0)
     if use_gpu:

@@ -249,7 +249,7 @@ def _run_segmentation(args):
     if models_dir:
         from cellpose.models import get_user_models
 
-        logger.info(f'Download cellpose models to {models_dir}')
+        logger.info(f'Download cellpose models to {models_dir} ({os.environ['CELLPOSE_LOCAL_MODELS_PATH']})')
         get_user_models()
 
     if args.dask_scheduler:
