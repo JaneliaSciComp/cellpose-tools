@@ -2,7 +2,6 @@ import os
 import sys
 import traceback
 
-from cellpose.models import get_user_models
 from cellpose import version_str as cellpose_version
 from cellpose.cli import get_arg_parser
 
@@ -16,19 +15,22 @@ def _define_args():
                              help='cache cellpose models directory')
     args_parser.add_argument('--model', dest='segmentation_model',
                              type=str,
-                             default='cyto',
+                             default='cpsam',
                              help='segmentation model')
     return args_parser
 
 
-def _download_cellpose_models(args):
+def download_cellpose_models(models_dir, model_name):
 
-    if args.models_dir is not None:
-        os.environ['CELLPOSE_LOCAL_MODELS_PATH'] = args.models_dir
+    if models_dir is not None:
+        os.environ['CELLPOSE_LOCAL_MODELS_PATH'] = models_dir
+
+    from cellpose.models import get_user_models, model_path
 
     try:
-        print('Cache cellpose models', args.model_type, flush=True)
+        print('Cache cellpose models', model_name, flush=True)
         get_user_models()
+        model_path(model_name)
     except:
         raise
 
@@ -46,7 +48,7 @@ if __name__ == '__main__':
         if args.version:
             _print_version_and_exit()
 
-        _download_cellpose_models(args)
+        download_cellpose_models(args.models_dir, args.segmentation_model)
         sys.exit(0)
     except Exception as err:
         print('Cellpose labeling error:', err)

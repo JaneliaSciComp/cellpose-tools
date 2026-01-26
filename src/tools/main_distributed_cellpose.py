@@ -23,6 +23,7 @@ from utils.configure_dask import (load_dask_config, ConfigureWorkerPlugin)
 from zarr_tools.ngff.ngff_utils import (create_ome_metadata, get_axes_dictindex,
                                         get_non_spatial_axes, get_spatial_voxel_spacing)
 from zarr_tools.io.zarr_io import create_zarr_array
+from tools.download_models import download_cellpose_models
 
 
 logger:logging.Logger
@@ -246,11 +247,9 @@ def _run_segmentation(args):
     else:
         models_dir = None
 
-    if models_dir:
-        from cellpose.models import get_user_models
 
-        logger.info(f'Download cellpose models to {models_dir} ({os.environ['CELLPOSE_LOCAL_MODELS_PATH']})')
-        get_user_models()
+    logger.info(f'Download cellpose models to {models_dir} ({os.environ.get('CELLPOSE_LOCAL_MODELS_PATH')})')
+    download_cellpose_models(models_dir, args.segmentation_model)
 
     if args.dask_scheduler:
         logger.info(f'Create dask client for {args.dask_scheduler}')
