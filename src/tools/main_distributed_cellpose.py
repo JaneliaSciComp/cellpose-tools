@@ -126,6 +126,11 @@ def _define_args():
                              type=_dictfromjson,
                              default={},
                              help='Zarr array compression options')
+    args_parser.add_argument('--with-ome-labels',
+                             dest='with_label_values',
+                             action='store_true',
+                             default=False,
+                             help='If set output label values in OME metadata')
     args_parser.add_argument('--zarr-format', '--zarr_format',
                              type=int,
                              default=2,
@@ -426,7 +431,7 @@ def _run_segmentation(args):
             if output__container_type != 'zarr':
                 logger.info(f'Save output labels as {output__container_type} at {args.output}')
                 write_zarray_as(output_labels, args.output, args.output_subpath)
-            else:
+            elif args.with_label_values:
                 _update_image_label_attrs(output_labels, nlabels)
 
             if dask_client is not None:
