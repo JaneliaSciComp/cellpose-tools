@@ -118,11 +118,12 @@ def _define_args():
                              type=_inttuple,
                              metavar='X,Y,Z',
                              help='Output chunk size as a tuple (x,y,z).')
-    args_parser.add_argument('--compressor',
+    args_parser.add_argument('--compressor', '--compression',
+                             dest='compressor',
                              default='zstd',
                              help='Zarr array compression algorithm')
-    args_parser.add_argument('--compression-opts', '--compression_opts',
-                             dest='compression_opts',
+    args_parser.add_argument('--compressor-opts', '--compression-opts',
+                             dest='compressor_opts',
                              type=_dictfromjson,
                              default={},
                              help='Zarr array compression options')
@@ -515,7 +516,7 @@ def _create_output_labels_zarr(args, image_attrs, labels_dtype='uint32'):
         output_blocksize,
         labels_dtype,
         compressor=args.compressor,
-        compression_opts=args.compression_opts,
+        compression_opts=args.compressor_opts,
         parent_array_attrs=ome_metadata,
         zarr_format=args.zarr_format,
     )
