@@ -719,6 +719,7 @@ def _merge_boxes(boxes):
 def _write_new_labeling(new_labeling_path, new_labeling):
     new_labeling_dir = os.path.dirname(new_labeling_path)
     os.makedirs(new_labeling_dir, exist_ok=True)
+    logger.info(f'Save new label assignment to {new_labeling_path}')
     np.save(new_labeling_path, new_labeling)
 
 
