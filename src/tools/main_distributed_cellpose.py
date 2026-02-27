@@ -14,7 +14,7 @@ from io_utils.write_utils import container_type, write_zarray_as
 
 from math import floor
 
-from segmentation.cellpose import (distributed_eval, local_eval)
+from segmentation.distributed_cellpose import (distributed_eval, local_eval)
 from segmentation.preprocessing import get_preprocessing_steps
 
 from utils.configure_logging import (configure_logging)
