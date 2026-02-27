@@ -1,5 +1,6 @@
 import json
 import logging
+import numpy as np
 import os
 import sys
 import traceback
@@ -23,44 +24,12 @@ from utils.configure_dask import (load_dask_config, ConfigureWorkerPlugin)
 from zarr_tools.ngff.ngff_utils import (create_ome_metadata, get_axes_dictindex,
                                         get_non_spatial_axes, get_spatial_voxel_spacing)
 from zarr_tools.io.zarr_io import create_zarr_array
-from tools.download_models import download_cellpose_models
+
+from .cli import dictfromjson, floattuple, inttuple, intlist, stringlist
+from .download_models import download_cellpose_models
 
 
 logger:logging.Logger
-
-
-def _dictfromjson(arg:str):
-    if arg:
-        return json.loads(arg)
-    else:
-        return {}
-
-def _floattuple(arg):
-    if arg is not None and arg.strip():
-        return tuple([float(d) for d in arg.split(',')])
-    else:
-        return ()
-
-
-def _inttuple(arg):
-    if arg is not None and arg.strip():
-        return tuple([int(d) for d in arg.split(',')])
-    else:
-        return ()
-
-
-def _intlist(arg):
-    if arg is not None and arg.strip():
-        return [int(d) for d in arg.split(',')]
-    else:
-        return []
-
-
-def _stringlist(arg):
-    if arg is not None and arg.strip():
-        return list(filter(lambda x: x, [s.strip() for s in arg.split(',')]))
-    else:
-        return []
 
 
 def _define_args():
@@ -81,12 +50,12 @@ def _define_args():
                              help = "Time index in case the input is an OME-ZARR container")
     args_parser.add_argument('--input-channels', '--input_channels',
                              dest='input_channels',
-                             type=_intlist,
+                             type=intlist,
                              help = "Input segmentation channels")
 
     args_parser.add_argument('--voxel-spacing', '--voxel_spacing',
                              dest='voxel_spacing',
-                             type=_floattuple,
+                             type=floattuple,
                              metavar='X,Y,Z',
                              help = "Spatial voxel spacing as X,Y,Z")
 
@@ -115,7 +84,7 @@ def _define_args():
                              help='Output chunk size as a single int')
     args_parser.add_argument('--output-blocksize', '--output_blocksize',
                              dest='output_blocksize',
-                             type=_inttuple,
+                             type=inttuple,
                              metavar='X,Y,Z',
                              help='Output chunk size as a tuple (x,y,z).')
     args_parser.add_argument('--compressor', '--compression',
@@ -124,7 +93,7 @@ def _define_args():
                              help='Zarr array compression algorithm')
     args_parser.add_argument('--compressor-opts', '--compression-opts',
                              dest='compressor_opts',
-                             type=_dictfromjson,
+                             type=dictfromjson,
                              default={},
                              help='Zarr array compression options')
     args_parser.add_argument('--with-ome-labels',
@@ -146,11 +115,11 @@ def _define_args():
 
     args_parser.add_argument('--process-blocksize', '--process_blocksize',
                              dest='process_blocksize',
-                             type=_inttuple,
+                             type=inttuple,
                              help='Output chunk size as a tuple (x,y,z).')
     args_parser.add_argument('--blocks-overlaps', '--blocks_overlaps',
                              dest='blocks_overlaps',
-                             type=_inttuple,
+                             type=inttuple,
                              metavar='dX,dY,dZ',
                              help='Blocks overlaps as a tuple (x,y,z).')
     args_parser.add_argument('--max-size-fraction', '--max_size_fraction',
@@ -225,9 +194,15 @@ def _define_args():
                                   default=1.0,
                                   help='Label distance transform threshold used for merging labels')
     
+    distributed_args.add_argument('--skip-merge-labels', '--skip_merge_labels',
+                                  dest='skip_merge_labels',
+                                  action='store_true',
+                                  default=False,
+                                  help='Skip label merging across blocks and save boxes/box_ids to the working dir')
+
     distributed_args.add_argument('--preprocessing-steps', '--preprocessing_steps',
                                   dest='preprocessing_steps',
-                                  type=_stringlist,
+                                  type=stringlist,
                                   default=[],
                                   help='Preprocessing steps to run before cellpose')
 
@@ -381,6 +356,13 @@ def _run_segmentation(args):
                 if args.process_blocksize is not None:
                     # process_blocksize are specified (as X,Y,Z) so revert them
                     process_blocksize = args.process_blocksize[::-1]
+                    output_chunks = np.array(labels_zarr.chunks[-3:])
+                    if np.any(output_chunks > process_blocksize):
+                        logger.error(f'Process size {process_blocksize} must be >= spatial values of {labels_zarr.chunks}')
+                        raise ValueError((
+                            f'Processing block size {process_blocksize} is too small '
+                            f'compared to chunk size: {output_chunks}'
+                        ))
                 else:
                     process_blocksize = input_image_shape # process the whole image
 
@@ -412,6 +394,7 @@ def _run_segmentation(args):
                     normalize_args=normalize_args,
                     cellpose_eval_args=cellpose_eval_args,
                     label_dist_th=args.label_dist_th,
+                    skip_merge_labels=args.skip_merge_labels,
                 )
                 nlabels = len(boxes)
             else:

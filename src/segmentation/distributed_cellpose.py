@@ -40,6 +40,7 @@ def distributed_eval(
         normalize_args={},
         cellpose_eval_args={},
         label_dist_th=1.0,
+        skip_merge_labels=False,
 ):
     """
     Evaluate a cellpose model on overlapping blocks of a big image.
@@ -157,40 +158,25 @@ def distributed_eval(
         'Segmentation results contain '
         f'faces: {len(faces)}, boxes: {len(boxes_)}, box_ids: {len(per_block_box_ids)}'
     ))
-    # merge labels
     boxes = [box for sublist in boxes_ for box in sublist]
     all_box_ids = np.concatenate(per_block_box_ids).astype(np.uint32)
-    logger.info((
-        f'Relabel {all_box_ids.shape} blocks of type {all_box_ids.dtype} - '
-        f'use {len(faces)} faces for merging labels'
-    ))
-    new_labeling = _determine_merge_relabeling(label_block_indices, faces, all_box_ids,
-                                               label_dist_th=label_dist_th)
-    new_labeling_path = f'{output_dir}/new_labeling.npy'
-    _write_new_labeling(new_labeling_path, new_labeling)
 
-    logger.info(f'Relabel {all_box_ids.shape} blocks from {new_labeling_path}')
-    label_slices = slices_from_chunks(
-        normalize_chunks(labels_zarr.chunks, shape=labels_zarr.shape)
-    )
-    relabel_futures = dask_client.map(
-        _relabel_block,
-        label_slices,
-        new_labeling=new_labeling_path,
-        data=labels_zarr,
-    )
-    relabel_res = True
-    for f, r in as_completed(relabel_futures, with_results=True):
-        if f.cancelled():
-            exc = f.exception()
-            logger.exception(f'Block processing exception: {exc}')
-            relabel_res = False
-        else:
-            relabel_res = relabel_res and r
-    logger.info(f'Relabeling final result: {relabel_res}')
-
-    merged_boxes = _merge_all_boxes(boxes, new_labeling[all_box_ids.astype(np.int32)])
-    return labels_zarr, merged_boxes
+    if skip_merge_labels:
+        logger.info((
+            'Skip label merge process '
+            f'saving label block indices to {output_dir}/label-block-indices.npy '
+            f'saving block faces to {output_dir}/block-faces.npy '
+            f'saving label boxes to {output_dir}/label-boxes.npy '
+            f'and label box ids to {output_dir}/label-boxes-ids.npy'
+        ))
+        np.save(f'{output_dir}/label-block-indices.npy', np.array(label_block_indices, dtype=object), allow_pickle=True)
+        np.save(f'{output_dir}/block-faces.npy', np.array(faces, dtype=object), allow_pickle=True)
+        np.save(f'{output_dir}/label-boxes.npy', np.array(boxes, dtype=object), allow_pickle=True)
+        np.save(f'{output_dir}/label-boxes-ids.npy', all_box_ids)
+        return labels_zarr, boxes
+    else:
+        return merge_labels(label_block_indices, faces, boxes, all_box_ids,
+                             labels_zarr, dask_client, output_dir, label_dist_th)
 
 
 def local_eval(
@@ -396,8 +382,10 @@ def _process_block(
         remap = remap[1:]
     if labels_zarr.ndim != seg_ndim:
         labels_zarr_coords = (0,)*(labels_zarr.ndim-seg_ndim)+tuple(labels_coords)
+        logger.debug(f'Write {segmentation.shape} labels for block {block_index} at {labels_zarr_coords} ({labels_coords})')
         labels_zarr[labels_zarr_coords] = segmentation
     else:
+        logger.debug(f'Write {segmentation.shape} labels for block {block_index} at {labels_coords}')
         labels_zarr[tuple(labels_coords)] = segmentation
     faces = _block_faces(segmentation)
     return labels_block_index, faces, boxes, remap
@@ -606,6 +594,41 @@ def _block_faces(segmentation):
     return faces
 
 
+def merge_labels(label_block_indices, faces, boxes, all_box_ids,
+                  labels_zarr, dask_client, output_dir, label_dist_th):
+    logger.info((
+        f'Relabel {all_box_ids.shape} blocks of type {all_box_ids.dtype} - '
+        f'use {len(faces)} faces for merging labels'
+    ))
+    new_labeling = _determine_merge_relabeling(label_block_indices, faces, all_box_ids,
+                                               label_dist_th=label_dist_th)
+    new_labeling_path = f'{output_dir}/new_labeling.npy'
+    _write_new_labeling(new_labeling_path, new_labeling)
+
+    logger.info(f'Relabel {all_box_ids.shape} blocks from {new_labeling_path}')
+    label_slices = slices_from_chunks(
+        normalize_chunks(labels_zarr.chunks, shape=labels_zarr.shape)
+    )
+    relabel_futures = dask_client.map(
+        _relabel_block,
+        label_slices,
+        new_labeling=new_labeling_path,
+        data=labels_zarr,
+    )
+    relabel_res = True
+    for f, r in as_completed(relabel_futures, with_results=True):
+        if f.cancelled():
+            exc = f.exception()
+            logger.exception(f'Block processing exception: {exc}')
+            relabel_res = False
+        else:
+            relabel_res = relabel_res and r
+    logger.info(f'Relabeling final result: {relabel_res}')
+
+    merged_boxes = _merge_all_boxes(boxes, new_labeling[all_box_ids.astype(np.int32)])
+    return labels_zarr, merged_boxes
+
+
 def _determine_merge_relabeling(block_indices, faces, labels,
                                label_dist_th=1.0):
     """Determine boundary segment mergers, remap all label IDs to merge
@@ -730,5 +753,6 @@ def _relabel_block(block_coords, new_labeling=None, data=[]):
         logger.info(f'Relabel block: {block_coords}')
         block = data[block_coords]
         new_labeling_array = np.load(new_labeling)
+        logger.info(f'Apply {len(new_labeling_array)} to {block.shape} at {block_coords}')
         data[block_coords] = new_labeling_array[block]
         return True

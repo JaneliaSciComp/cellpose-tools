@@ -19,8 +19,10 @@ class ConfigureWorkerPlugin(WorkerPlugin):
         self.logger = None
 
     def setup(self, worker: Worker):
+        log_file_suffix = worker.name if self.logging_config else None
         self.logger = configure_logging(self.logging_config, self.verbose,
-                                        logger_name='dask_worker')
+                                        logger_name='dask_worker',
+                                        log_file_suffix=log_file_suffix)
         _set_cpu_resources(self.worker_cpus)
         if self.models_dir:
             self.logger.info(f'Set cellpose models path: {self.models_dir}')
