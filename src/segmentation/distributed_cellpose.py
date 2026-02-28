@@ -151,20 +151,31 @@ def distributed_eval(
         cellpose_eval_args=cellpose_eval_args,
     )
 
-    results = dask_client.gather(futures)
+    label_block_indices, faces, boxes = [], [], []
+    all_box_ids = np.array([], dtype=np.uint32)
+
+    for f, r in as_completed(futures, with_results=True):
+        if f.cancelled():
+            tb = f.traceback()
+            logger.error(f'Block segmenting error: {''.join(traceback.format_tb(tb))}')
+        else:
+            bi, bfs, bboxes, blids = r
+            logger.debug(f'Finished segmenting block {bi} (found {len(blids)} labels) ')
+            label_block_indices.append(bi)
+            faces.append(bfs)
+            boxes.extend(bboxes)
+            all_box_ids = np.concatenate([all_box_ids, blids]).astype(np.uint32)
+
     logger.info((
         f'Finished segmenting: {len(block_indices)} {blocksize} blocks '
         f'with overlap {blockoverlaps}'
         ' - start label merge process'
     ))
 
-    label_block_indices, faces, boxes_, per_block_box_ids = list(zip(*results))
     logger.info((
         'Segmentation results contain '
-        f'faces: {len(faces)}, boxes: {len(boxes_)}, box_ids: {len(per_block_box_ids)}'
+        f'faces: {len(faces)}, boxes: {len(boxes)}, box_ids: {len(all_box_ids)}'
     ))
-    boxes = [box for sublist in boxes_ for box in sublist]
-    all_box_ids = np.concatenate(per_block_box_ids).astype(np.uint32)
 
     if skip_merge_labels:
         logger.info((
@@ -629,8 +640,8 @@ def merge_labels(label_block_indices, faces, boxes, all_box_ids,
     relabel_res = True
     for f, r in as_completed(relabel_futures, with_results=True):
         if f.cancelled():
-            exc = f.exception()
-            logger.exception(f'Block processing exception: {exc}')
+            tb = f.traceback()
+            logger.error(f'Block relabel error: {''.join(traceback.format_tb(tb))}')
             relabel_res = False
         else:
             relabel_res = relabel_res and r
