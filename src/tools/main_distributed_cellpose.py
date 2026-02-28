@@ -68,8 +68,8 @@ def _define_args():
                              type=str,
                              help = "mask subpath")
 
-    args_parser.add_argument('--mask-descriptor',
-                             dest='mask_descriptor',
+    args_parser.add_argument('--roi',
+                             dest='roi',
                              type=inttuple,
                              metavar="xmin,ymin,zmin,xmax,ymax,zmax",
                              help='Fixed volume mask descriptor a tuple of 6 values representing min and max voxel coordinates')
@@ -394,7 +394,8 @@ def _run_segmentation(args):
                     labels_zarr,
                     dask_client,
                     blockoverlaps=blocks_overlaps,
-                    mask=args.mask_descriptor,
+                    mask=None,
+                    roi=args.roi,
                     preprocessing_steps=preprocessing_steps,
                     cellpose_model_args=cellpose_model_args,
                     normalize_args=normalize_args,
@@ -594,6 +595,8 @@ def _main():
             args_parser.error("--input is required")
         if not args.output:
             args_parser.error("--output is required")
+        if args.roi is not None and len(args.roi) not in (3, 6):
+            args_parser.error(f"--roi must have 3 - minx,miny,minz only, or 6 minx,miny,minz and maxx,maxy,maxz values, got {len(args.roi)} ({args.roi})")
 
         # prepare logging
         global logger

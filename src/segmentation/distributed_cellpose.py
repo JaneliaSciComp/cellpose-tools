@@ -35,6 +35,7 @@ def distributed_eval(
         dask_client,
         blockoverlaps=(),
         mask=None,
+        roi=None,
         preprocessing_steps=[],
         cellpose_model_args={},
         normalize_args={},
@@ -46,7 +47,7 @@ def distributed_eval(
     Evaluate a cellpose model on overlapping blocks of a big image.
     Distributed over workstation or cluster resources with Dask.
     Optionally run preprocessing steps on the blocks before running cellpose.
-    Optionally use a mask to ignore background regions in image.
+    Optionally use a mask or roi to ignore background regions in image.
 
     The dask client must be present but it can be either a remote client that references
     a Dask Scheduler's IP or a local client.
@@ -121,7 +122,7 @@ def distributed_eval(
     blockoverlaps = prepare_overlaps(image_shape, blocksize, blockoverlaps,
                                      default_overlap=2 * diameter if diameter is not None else None)
     block_indices, block_crops = get_block_crops(
-        image_shape, blocksize, blockoverlaps, mask,
+        image_shape, blocksize, blockoverlaps, mask, roi,
     )
 
     logger.info((
