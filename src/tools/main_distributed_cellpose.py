@@ -68,6 +68,12 @@ def _define_args():
                              type=str,
                              help = "mask subpath")
 
+    args_parser.add_argument('--mask-descriptor',
+                             dest='mask_descriptor',
+                             type=inttuple,
+                             metavar="xmin,ymin,zmin,xmax,ymax,zmax",
+                             help='Fixed volume mask descriptor a tuple of 6 values representing min and max voxel coordinates')
+
     args_parser.add_argument('-o','--output',
                              dest='output',
                              required=False,
@@ -388,7 +394,7 @@ def _run_segmentation(args):
                     labels_zarr,
                     dask_client,
                     blockoverlaps=blocks_overlaps,
-                    mask=None,
+                    mask=args.mask_descriptor,
                     preprocessing_steps=preprocessing_steps,
                     cellpose_model_args=cellpose_model_args,
                     normalize_args=normalize_args,
@@ -415,7 +421,7 @@ def _run_segmentation(args):
             if output__container_type != 'zarr':
                 logger.info(f'Save output labels as {output__container_type} at {args.output}')
                 write_zarray_as(output_labels, args.output, args.output_subpath)
-            elif args.with_label_values:
+            elif args.with_label_values and nlabels > 0:
                 _update_image_label_attrs(output_labels, nlabels)
 
             if dask_client is not None:

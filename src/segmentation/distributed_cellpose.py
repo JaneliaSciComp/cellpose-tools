@@ -130,6 +130,10 @@ def distributed_eval(
         f'from a {image_shape} image'
     ))
 
+    if len(block_indices) == 0:
+        logger.info('No block was selected for segmentation')
+        return labels_zarr, []
+
     futures = dask_client.map(
         _process_block,
         block_indices,
@@ -568,10 +572,16 @@ def _global_segment_ids(segmentation, block_index, nblocks):
     99999 maximum number of segments per block
     """
     unique, unique_inverse = np.unique(segmentation, return_inverse=True)
-    logger.debug((
+    logger.info((
         f'Block {block_index} out of {nblocks} blocks '
         f'- has {len(unique)} unique labels '
     ))
+
+    max_local_label = np.max(unique)
+    if max_local_label > 99999:
+        logger.error(f'Block {block_index} has more than 99999 labels ({np.max(unique)}) so this may generate label conflicts - use a smaller block')
+        raise ValueError(f'Max label in block {block_index} is {max_local_label} may create possible clashes')
+
     p = str(np.ravel_multi_index(block_index, nblocks))
     remap = [int(p+str(x).zfill(5)) for x in unique]
     if unique[0] == 0:
