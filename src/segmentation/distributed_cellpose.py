@@ -707,14 +707,26 @@ def distributed_merge(
                          unmerged_labels_zarr, merged_labels_zarr, dask_client, output_dir, label_dist_th)
 
 
-
 def _get_label_merge_info(
     block_index,
     crop,
     labels_zarr
 ):
-    None # TODO
+    logger.debug((
+        f'Get label block info from block {block_index} at {crop} '
+        f'from an image of shape {labels_zarr.shape} '
+    ))
+    labels_block = labels_zarr[tuple(crop)]
+    faces = _block_faces(labels_block)
 
+    label_ids = np.unique(labels_block)
+    if label_ids[0] == 0:
+        label_ids = label_ids[1:]
+
+    boxes = _bounding_boxes_in_global_coordinates(labels_block, crop)
+    faces = _block_faces(labels_block)
+
+    return block_index, faces, boxes, label_ids
 
 
 def _determine_merge_relabeling(block_indices, faces, labels,
