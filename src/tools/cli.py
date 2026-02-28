@@ -1,8 +1,12 @@
+import json
+
+
 def dictfromjson(arg:str):
     if arg:
         return json.loads(arg)
     else:
         return {}
+
 
 def floattuple(arg):
     if arg is not None and arg.strip():
