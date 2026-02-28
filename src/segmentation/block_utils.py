@@ -15,7 +15,7 @@ def get_block_crops(shape, blocksize, overlaps, mask, roi):
        the block indices and the slice tuples.
     """
     blocksize = np.array(blocksize, dtype=int)
-    blockoverlaps = np.array(overlaps, dtype=int)
+    blockoverlaps = np.array(overlaps, dtype=int) if overlaps else 0
 
     if mask is not None:
         ratio = np.array(mask.shape) / shape
@@ -58,7 +58,7 @@ def get_block_crops(shape, blocksize, overlaps, mask, roi):
                 s.start < b_max and s.stop > b_min
                     for s, b_min, b_max in zip(spatial_crop, roi_min_zyx, roi_max_zyx)
             )
-            intersects_message = 'intersect' if foreground else 'does not intersect'
+            intersects_message = 'does intersect' if foreground else 'does not intersect'
             logger.debug(f'Block {index} at {crop} ({spatial_crop}) {intersects_message} [{roi_min_zyx}:{roi_max_zyx}]')
 
 

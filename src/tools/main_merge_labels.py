@@ -10,7 +10,7 @@ from dask.distributed import Client, LocalCluster
 from io_utils.write_utils import container_type, write_zarray_as
 from io_utils.read_utils import read_array_attrs
 
-from segmentation.distributed_cellpose import merge_labels
+from segmentation.distributed_cellpose import distributed_merge
 
 from utils.configure_logging import configure_logging
 from utils.configure_dask import load_dask_config, ConfigureWorkerPlugin
@@ -160,24 +160,8 @@ def _run_merge(args):
         'uint32',
         compressor=args.compressor,
     )
-
-    import zarr as _zarr
-    input_labels_zarr = _zarr.open(args.input, mode='r', path=args.input_subpath)
-
-    logger.info('Copy unmerged labels to output zarr before relabeling')
-    labels_zarr[:] = input_labels_zarr[:]
-
-    logger.info('Start label merge process')
-    _, merged_boxes = merge_labels(
-        label_block_indices, faces, boxes, all_box_ids,
-        labels_zarr, dask_client, working_dir, args.label_dist_th,
-    )
-    logger.info(f'Merge complete. Found {len(merged_boxes)} labels')
-
-    output_container_type = container_type(args.output)
-    if output_container_type != 'zarr':
-        logger.info(f'Save output labels as {output_container_type} at {args.output}')
-        write_zarray_as(labels_zarr, args.output, output_subpath)
+    # call distributed label merge
+    # TODO
 
     dask_client.close()
 

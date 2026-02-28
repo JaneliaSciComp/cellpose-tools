@@ -14,7 +14,7 @@ import zarr
 from cellpose import transforms
 from cellpose.models import assign_device, CellposeModel
 from dask.array.core import slices_from_chunks, normalize_chunks
-from dask.distributed import as_completed
+from dask.distributed import as_completed, Client
 from typing import List
 
 from .block_utils import (get_block_crops, get_nblocks,
@@ -31,8 +31,8 @@ def distributed_eval(
         input_channels: List[int]|None,
         blocksize,
         output_dir,
-        labels_zarr,
-        dask_client,
+        labels_zarr: zarr.Array,
+        dask_client: Client,
         blockoverlaps=(),
         mask=None,
         roi=None,
@@ -125,15 +125,15 @@ def distributed_eval(
         image_shape, blocksize, blockoverlaps, mask, roi,
     )
 
-    logger.info((
-        f'Start segmenting: {len(block_indices)} {blocksize} blocks '
-        f'with overlap {blockoverlaps} '
-        f'from a {image_shape} image'
-    ))
-
     if len(block_indices) == 0:
         logger.info('No block was selected for segmentation')
         return labels_zarr, []
+
+    logger.info((
+        f'Start segmenting: {len(block_indices)} {blocksize} blocks '
+        f'with overlap {blockoverlaps} '
+        f'from a {image_shape} image '
+    ))
 
     futures = dask_client.map(
         _process_block,
@@ -152,7 +152,7 @@ def distributed_eval(
     )
 
     label_block_indices, faces, boxes = [], [], []
-    all_box_ids = np.array([], dtype=np.uint32)
+    all_label_ids = np.array([], dtype=np.uint32)
 
     for f, r in as_completed(futures, with_results=True):
         if f.cancelled():
@@ -164,7 +164,7 @@ def distributed_eval(
             label_block_indices.append(bi)
             faces.append(bfs)
             boxes.extend(bboxes)
-            all_box_ids = np.concatenate([all_box_ids, blids]).astype(np.uint32)
+            all_label_ids = np.concatenate([all_label_ids, blids]).astype(np.uint32)
 
     logger.info((
         f'Finished segmenting: {len(block_indices)} {blocksize} blocks '
@@ -174,25 +174,18 @@ def distributed_eval(
 
     logger.info((
         'Segmentation results contain '
-        f'faces: {len(faces)}, boxes: {len(boxes)}, box_ids: {len(all_box_ids)}'
+        f'faces: {len(faces)}, boxes: {len(boxes)}, box_ids: {len(all_label_ids)}'
     ))
 
     if skip_merge_labels:
         logger.info((
             'Skip label merge process '
-            f'saving label block indices to {output_dir}/label-block-indices.npy '
-            f'saving block faces to {output_dir}/block-faces.npy '
-            f'saving label boxes to {output_dir}/label-boxes.npy '
-            f'and label box ids to {output_dir}/label-boxes-ids.npy'
+            f'returning {len(boxes)} labels '
         ))
-        np.save(f'{output_dir}/label-block-indices.npy', np.array(label_block_indices, dtype=object), allow_pickle=True)
-        np.save(f'{output_dir}/block-faces.npy', np.array(faces, dtype=object), allow_pickle=True)
-        np.save(f'{output_dir}/label-boxes.npy', np.array(boxes, dtype=object), allow_pickle=True)
-        np.save(f'{output_dir}/label-boxes-ids.npy', all_box_ids)
         return labels_zarr, boxes
     else:
-        return merge_labels(label_block_indices, faces, boxes, all_box_ids,
-                             labels_zarr, dask_client, output_dir, label_dist_th)
+        return _merge_labels(label_block_indices, faces, boxes, all_label_ids,
+                             labels_zarr, labels_zarr, dask_client, output_dir, label_dist_th)
 
 
 def local_eval(
@@ -288,6 +281,7 @@ def _process_block(
     cellpose_model_args={},
     normalize_args={},
     cellpose_eval_args={},
+    max_labels_per_block=99999,
 ):
     """
     Preprocess and segment one block, of many, with eventual merger
@@ -391,20 +385,21 @@ def _process_block(
     logger.info(f'Remove {labels_overlaps} overlaps from {segmentation.shape} labels')
     segmentation, labels_coords = remove_overlaps(segmentation, labels_coords, labels_overlaps, labels_blocksize)
 
-    boxes = _bounding_boxes_in_global_coordinates(segmentation, labels_coords)
     nblocks = get_nblocks(labels_shape, labels_blocksize)
-    segmentation, remap = _global_segment_ids(segmentation, labels_block_index, nblocks)
-    if remap[0] == 0:
-        remap = remap[1:]
+    segmentation, label_ids = _global_segment_ids(segmentation, labels_block_index, nblocks,
+                                                  max_labels_per_block=max_labels_per_block)
+    if label_ids[0] == 0:
+        label_ids = label_ids[1:]
     if labels_zarr.ndim != seg_ndim:
         labels_zarr_coords = (0,)*(labels_zarr.ndim-seg_ndim)+tuple(labels_coords)
-        logger.debug(f'Write {segmentation.shape} labels for block {block_index} at {labels_zarr_coords} ({labels_coords})')
+        logger.debug(f'Write {segmentation.shape} labels for block {block_index} at {labels_zarr_coords} (zarr slice: {labels_coords})')
         labels_zarr[labels_zarr_coords] = segmentation
     else:
         logger.debug(f'Write {segmentation.shape} labels for block {block_index} at {labels_coords}')
         labels_zarr[tuple(labels_coords)] = segmentation
+    boxes = _bounding_boxes_in_global_coordinates(segmentation, labels_coords)
     faces = _block_faces(segmentation)
-    return labels_block_index, faces, boxes, remap
+    return labels_block_index, faces, boxes, label_ids
 
 
 # ----------------------- component functions ---------------------------------#
@@ -575,7 +570,7 @@ def _bounding_boxes_in_global_coordinates(segmentation, crop):
     return boxes
 
 
-def _global_segment_ids(segmentation, block_index, nblocks):
+def _global_segment_ids(segmentation, block_index, nblocks, max_labels_per_block=99999):
     """
     Pack the block index into the segment IDs so they are
     globally unique. Everything gets remapped to [1..N] later.
@@ -590,12 +585,13 @@ def _global_segment_ids(segmentation, block_index, nblocks):
     ))
 
     max_local_label = np.max(unique)
-    if max_local_label > 99999:
+    if max_local_label > max_labels_per_block:
         logger.error(f'Block {block_index} has more than 99999 labels ({np.max(unique)}) so this may generate label conflicts - use a smaller block')
         raise ValueError(f'Max label in block {block_index} is {max_local_label} may create possible clashes')
 
     p = str(np.ravel_multi_index(block_index, nblocks))
-    remap = [int(p+str(x).zfill(5)) for x in unique]
+    max_label_digits = len(str(max_labels_per_block))
+    remap = [int(p+str(x).zfill(max_label_digits)) for x in unique]
     if unique[0] == 0:
         remap[0] = 0  # 0 should just always be 0
     logger.debug(f'Remap: {remap}')
@@ -616,26 +612,27 @@ def _block_faces(segmentation):
     return faces
 
 
-def merge_labels(label_block_indices, faces, boxes, all_box_ids,
-                  labels_zarr, dask_client, output_dir, label_dist_th):
+def _merge_labels(label_block_indices, faces, boxes, all_label_ids,
+                  source_labels_zarr, target_labels_zarr, dask_client, output_dir, label_dist_th):
     logger.info((
-        f'Relabel {all_box_ids.shape} blocks of type {all_box_ids.dtype} - '
+        f'Relabel {all_label_ids.shape} labels of type {all_label_ids.dtype} - '
         f'use {len(faces)} faces for merging labels'
     ))
-    new_labeling = _determine_merge_relabeling(label_block_indices, faces, all_box_ids,
+    new_labeling = _determine_merge_relabeling(label_block_indices, faces, all_label_ids,
                                                label_dist_th=label_dist_th)
     new_labeling_path = f'{output_dir}/new_labeling.npy'
     _write_new_labeling(new_labeling_path, new_labeling)
 
-    logger.info(f'Relabel {all_box_ids.shape} blocks from {new_labeling_path}')
+    logger.info(f'Relabel {all_label_ids.shape} blocks from {new_labeling_path}')
     label_slices = slices_from_chunks(
-        normalize_chunks(labels_zarr.chunks, shape=labels_zarr.shape)
+        normalize_chunks(target_labels_zarr.chunks, shape=target_labels_zarr.shape)
     )
     relabel_futures = dask_client.map(
         _relabel_block,
         label_slices,
         new_labeling=new_labeling_path,
-        data=labels_zarr,
+        source=source_labels_zarr,
+        target=target_labels_zarr,
     )
     relabel_res = True
     for f, r in as_completed(relabel_futures, with_results=True):
@@ -646,9 +643,78 @@ def merge_labels(label_block_indices, faces, boxes, all_box_ids,
         else:
             relabel_res = relabel_res and r
     logger.info(f'Relabeling final result: {relabel_res}')
+    merged_boxes = _merge_all_boxes(boxes, new_labeling[all_label_ids.astype(np.int32)])
+    return target_labels_zarr, merged_boxes
 
-    merged_boxes = _merge_all_boxes(boxes, new_labeling[all_box_ids.astype(np.int32)])
-    return labels_zarr, merged_boxes
+
+def distributed_merge(
+        unmerged_labels_zarr: zarr.Array,
+        blocksize,
+        merged_labels_zarr: zarr.Array,
+        output_dir,
+        dask_client: Client,
+        mask=None,
+        roi=None,
+        label_dist_th=1.0,
+):
+    labels_shape = unmerged_labels_zarr.shape
+    blocksize = prepare_blocksize(labels_shape, blocksize)
+    block_indices, block_crops = get_block_crops(
+        labels_shape, blocksize, None, mask, roi,
+    )
+    if len(block_indices) == 0:
+        # nothing to do, but we may still want to copy
+        # unmerged_labels to merged_labels
+        return unmerged_labels_zarr, []
+
+    logger.info((
+        f'Start merging: {len(block_indices)} {blocksize} label blocks '
+        f'from a {labels_shape} segmented image '
+    ))
+
+    futures = dask_client.map(
+        _get_label_merge_info,
+        block_indices,
+        block_crops,
+        labels_zarr=unmerged_labels_zarr,
+    )
+
+    label_block_indices, faces, boxes = [], [], []
+    all_label_ids = np.array([], dtype=np.uint32)
+
+    for f, r in as_completed(futures, with_results=True):
+        if f.cancelled():
+            tb = f.traceback()
+            logger.error(f'Block label extract error: {''.join(traceback.format_tb(tb))}')
+        else:
+            bi, bfs, bboxes, blids = r
+            logger.debug(f'Finished getting label info for block {bi} (found {len(blids)} labels) ')
+            label_block_indices.append(bi)
+            faces.append(bfs)
+            boxes.extend(bboxes)
+            all_label_ids = np.concatenate([all_label_ids, blids]).astype(np.uint32)
+
+    logger.info((
+        f'Finished getting label info for {len(block_indices)} {blocksize} blocks '
+        ' - start label merge process '
+    ))
+
+    logger.info((
+        'Unmerged segmentation contains '
+        f'faces: {len(faces)}, boxes: {len(boxes)}, box_ids: {len(all_label_ids)} '
+    ))
+    return _merge_labels(label_block_indices, faces, boxes, all_label_ids,
+                         unmerged_labels_zarr, merged_labels_zarr, dask_client, output_dir, label_dist_th)
+
+
+
+def _get_label_merge_info(
+    block_index,
+    crop,
+    labels_zarr
+):
+    None # TODO
+
 
 
 def _determine_merge_relabeling(block_indices, faces, labels,
@@ -656,11 +722,11 @@ def _determine_merge_relabeling(block_indices, faces, labels,
     """Determine boundary segment mergers, remap all label IDs to merge
        and put all label IDs in range [1..N] for N global segments found"""
     faces = _adjacent_faces(block_indices, faces)
-    logger.debug(f'Determine relabeling for {labels.shape} of type {labels.dtype}')
+    logger.debug(f'Determine relabeling for {labels.shape} labels of type {labels.dtype}')
     used_labels = labels.astype(int)
     label_range = int(np.max(used_labels) + 1)
     label_groups = _block_face_adjacency_graph(faces, label_range,
-                                              label_dist_th=label_dist_th)
+                                               label_dist_th=label_dist_th)
     logger.debug((
         f'Build connected components for {label_groups.shape} label groups'
         f'{label_groups}'
@@ -700,7 +766,7 @@ def _block_face_adjacency_graph(faces, labels_range, label_dist_th=1.0):
     """
     Shrink labels in face plane, then find which labels touch across the face boundary
     """
-    logger.info(f'Create adjacency graph for {labels_range} labels')
+    logger.info(f'Create adjacency graph for labels with a maximum range of {labels_range}')
     all_mappings = [np.empty((2, 0), dtype=np.uint32)]
     structure = scipy.ndimage.generate_binary_structure(3, 1)
     for face in faces:
@@ -768,13 +834,14 @@ def _write_new_labeling(new_labeling_path, new_labeling):
     np.save(new_labeling_path, new_labeling)
 
 
-def _relabel_block(block_coords, new_labeling=None, data=[]):
+def _relabel_block(block_coords, new_labeling=None,
+                   source=[], target=[]):
     if new_labeling is None:
         return False
     else:
         logger.info(f'Relabel block: {block_coords}')
-        block = data[block_coords]
+        block = source[block_coords]
         new_labeling_array = np.load(new_labeling)
         logger.info(f'Apply {len(new_labeling_array)} to {block.shape} at {block_coords}')
-        data[block_coords] = new_labeling_array[block]
+        target[block_coords] = new_labeling_array[block]
         return True

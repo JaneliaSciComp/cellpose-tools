@@ -21,7 +21,7 @@ from utils.configure_logging import (configure_logging)
 from utils.configure_dask import (load_dask_config, ConfigureWorkerPlugin)
 
 from zarr_tools.ngff.ngff_utils import (create_ome_metadata, get_axes_dictindex,
-                                        get_non_spatial_axes, get_spatial_voxel_spacing)
+                                        get_non_spatial_axes, get_spatial_dataset_voxel_spacing)
 from zarr_tools.io.zarr_io import create_zarr_array
 
 from .cli import dictfromjson, floattuple, inttuple, intlist, stringlist
@@ -271,7 +271,7 @@ def _run_segmentation(args):
         # voxel spacing is specified in the command line, so use this value
         voxel_spacing = args.voxel_spacing[::-1] # this is specified as XYZ and we want it as ZYX
     else:
-        voxel_spacing = get_spatial_voxel_spacing(input_image_attrs)
+        voxel_spacing = get_spatial_dataset_voxel_spacing(input_image_attrs, args.input_subpath)
 
     if voxel_spacing is not None:
         if args.expansion_factor > 0:
@@ -279,7 +279,7 @@ def _run_segmentation(args):
     else:
         voxel_spacing = (1,) * (3 if args.do_3D else 2)
 
-    logger.info(f'Image data shape/dim/dtype: {input_image_shape}, {input_image_ndim}, {input_image_dtype}')
+    logger.info(f'Image data shape/dim/dtype/spacing: {input_image_shape}, {input_image_ndim}, {input_image_dtype}, {voxel_spacing}')
     
     if args.output:
         try:
@@ -290,6 +290,8 @@ def _run_segmentation(args):
                     anisotropy = voxel_spacing[0] / voxel_spacing[1]
                 else:
                     anisotropy = None
+
+            logger.info(f'Voxel spacing at {args.input_subpath} is {voxel_spacing}, anisotropy is {anisotropy}')
 
             preprocessing_steps = get_preprocessing_steps(args.preprocessing_steps, 
                                                           args.preprocessing_config,
