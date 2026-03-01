@@ -18,10 +18,9 @@ def get_block_crops(shape, blocksize, overlaps, mask, roi):
     blockoverlaps = np.array(overlaps, dtype=int) if overlaps else 0
 
     if mask is not None:
-        ratio = np.array(mask.shape) / shape
-        mask_blocksize = np.round(ratio * blocksize).astype(int)
+        mask_ratio = np.array(mask.shape) / shape
     else:
-        mask_blocksize = None
+        mask_ratio = 0
 
     indices, crops = [], []
     nblocks = get_nblocks(shape, blocksize)
@@ -32,41 +31,46 @@ def get_block_crops(shape, blocksize, overlaps, mask, roi):
         stop = np.minimum(shape, stop)
         crop = tuple(slice(x, y) for x, y in zip(start, stop))
 
-        foreground = True
-        if mask is not None:
-            if mask_blocksize is not None:
-                start = mask_blocksize * index
-                stop = start + mask_blocksize
-                stop = np.minimum(mask.shape, stop)
-                mask_crop = tuple(slice(x, y) for x, y in zip(start, stop))
-                if not np.any(mask[mask_crop]):
-                    foreground = False
-        elif roi is not None:
-            # roi is a tuple (xmin,ymin,zmin[,xmax,ymax,zmax]) in XYZ order
-            # block crop slices are in ZYX order; reverse mask coords to match
-            roi_min_zyx = tuple(reversed(roi[:3]))
-            if len(roi) == 6:
-                roi_max_zyx = tuple(
-                    s if v < 0 else v
-                    for v, s in zip(reversed(roi[3:6]), shape[-3:])
-                )
-            else:
-                roi_max_zyx = shape[-3:]
-            # two intervals [a, b) and [c, d) intersect iff a < d and b > c
-            spatial_crop = crop[-3:]
-            foreground = all(
-                s.start < b_max and s.stop > b_min
-                    for s, b_min, b_max in zip(spatial_crop, roi_min_zyx, roi_max_zyx)
-            )
-            intersects_message = 'does intersect' if foreground else 'does not intersect'
-            logger.debug(f'Block {index} at {crop} ({spatial_crop}) {intersects_message} [{roi_min_zyx}:{roi_max_zyx}]')
-
-
+        foreground = is_foreground_block(crop, mask, mask_ratio, roi, shape)
         if foreground:
+            if roi is not None:
+                logger.debug(f'Block {index} at {crop} intersects the defined roi {roi}')
             indices.append(index)
             crops.append(crop)
 
     return indices, crops
+
+
+def is_foreground_block(block, mask, mask_image_ratio, roi, image_shape):
+    if mask is None and roi is None:
+        return True
+
+    spatial_crop = block[-3:]
+    if mask is not None:
+        mask_crop = tuple(
+            slice(
+                int(np.floor(s.start * r)),
+                min(int(np.ceil(s.stop * r)), int(ms)),
+            )
+            for s, r, ms in zip(spatial_crop, mask_image_ratio, mask.shape)
+        )
+        return np.any(mask[mask_crop])
+    else:
+        # roi is a tuple (xmin,ymin,zmin[,xmax,ymax,zmax]) in XYZ order
+        # block crop slices are in ZYX order; reverse mask coords to match
+        roi_min_zyx = tuple(reversed(roi[:3]))
+        if len(roi) == 6:
+            roi_max_zyx = tuple(
+                s if v < 0 else v
+                for v, s in zip(reversed(roi[3:6]), image_shape[-3:])
+            )
+        else:
+            roi_max_zyx = image_shape[-3:]
+        # two intervals [a, b) and [c, d) intersect iff a < d and b > c
+        return all(
+            s.start < b_max and s.stop > b_min
+            for s, b_min, b_max in zip(spatial_crop, roi_min_zyx, roi_max_zyx)
+        )
 
 
 def get_nblocks(shape, blocksize):

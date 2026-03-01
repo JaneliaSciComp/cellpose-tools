@@ -18,6 +18,7 @@ from dask.distributed import as_completed, Client
 from typing import List
 
 from .block_utils import (get_block_crops, get_nblocks,
+                          is_foreground_block,
                           prepare_blocksize, prepare_overlaps,
                           remove_overlaps)
 
@@ -185,7 +186,8 @@ def distributed_eval(
         return labels_zarr, boxes
     else:
         return _merge_labels(label_block_indices, faces, boxes, all_label_ids,
-                             labels_zarr, labels_zarr, dask_client, output_dir, label_dist_th)
+                             labels_zarr, labels_zarr, mask, roi, output_dir, label_dist_th,
+                             dask_client)
 
 
 def local_eval(
@@ -613,7 +615,9 @@ def _block_faces(segmentation):
 
 
 def _merge_labels(label_block_indices, faces, boxes, all_label_ids,
-                  source_labels_zarr, target_labels_zarr, dask_client, output_dir, label_dist_th):
+                  source_labels_zarr, target_labels_zarr, mask, roi,
+                  output_dir, label_dist_th,
+                  dask_client):
     logger.info((
         f'Relabel {all_label_ids.shape} labels of type {all_label_ids.dtype} - '
         f'use {len(faces)} faces for merging labels'
@@ -627,6 +631,14 @@ def _merge_labels(label_block_indices, faces, boxes, all_label_ids,
     label_slices = slices_from_chunks(
         normalize_chunks(target_labels_zarr.chunks, shape=target_labels_zarr.shape)
     )
+    total_chunks = len(label_slices)
+    if mask is not None or roi is not None:
+        mask_image_ratio = np.array(mask.shape) / target_labels_zarr.shape if mask is not None else 0
+        label_slices = [
+            crop for crop in label_slices
+            if is_foreground_block(crop, mask, mask_image_ratio, roi, target_labels_zarr.shape)
+        ]
+    logger.info(f'Relabel {len(label_slices)} chunks out of {total_chunks}')
     relabel_futures = dask_client.map(
         _relabel_block,
         label_slices,
@@ -704,7 +716,8 @@ def distributed_merge(
         f'faces: {len(faces)}, boxes: {len(boxes)}, box_ids: {len(all_label_ids)} '
     ))
     return _merge_labels(label_block_indices, faces, boxes, all_label_ids,
-                         unmerged_labels_zarr, merged_labels_zarr, dask_client, output_dir, label_dist_th)
+                         unmerged_labels_zarr, merged_labels_zarr, mask, roi, output_dir, label_dist_th,
+                         dask_client)
 
 
 def _get_label_merge_info(
