@@ -7,8 +7,7 @@ import traceback
 
 from dask.distributed import Client, LocalCluster
 
-from io_utils.write_utils import container_type, write_zarray_as
-from io_utils.read_utils import read_array_attrs
+from io_utils.read_utils import open_array, read_array_attrs
 
 from segmentation.distributed_cellpose import distributed_merge
 
@@ -16,8 +15,9 @@ from utils.configure_logging import configure_logging
 from utils.configure_dask import load_dask_config, ConfigureWorkerPlugin
 
 from zarr_tools.io.zarr_io import create_zarr_array
-from zarr_tools.ngff.ngff_utils import get_non_spatial_axes
+from zarr_tools.ngff.ngff_utils import create_ome_metadata, get_non_spatial_axes
 
+from .cli import dictfromjson, inttuple
 
 logger: logging.Logger
 
@@ -42,12 +42,24 @@ def _define_args():
     args_parser.add_argument('-o', '--output',
                              dest='output',
                              type=str,
-                             required=True,
                              help='Destination zarr path for merged labels')
     args_parser.add_argument('--output-subpath', '--output_subpath',
                              dest='output_subpath',
                              type=str,
                              help='Dataset subpath inside the output zarr/N5 container')
+    args_parser.add_argument('--compressor', '--compression',
+                             dest='compressor',
+                             help='Zarr array compression algorithm')
+    args_parser.add_argument('--compressor-opts', '--compression-opts',
+                             dest='compressor_opts',
+                             type=dictfromjson,
+                             default={},
+                             help='Zarr array compression options')
+    args_parser.add_argument('--zarr-format', '--zarr_format',
+                             type=int,
+                             default=2,
+                             dest='zarr_format',
+                             help='Zarr format (2 or 3 for v2 or v3)')
     args_parser.add_argument('--working-dir', '--working_dir',
                              dest='working_dir',
                              type=str,
@@ -55,45 +67,51 @@ def _define_args():
                              help='Directory containing the saved block metadata files '
                                   '(label-block-indices.npy, block-faces.npy, '
                                   'label-boxes.npy, label-boxes-ids.npy)')
+    args_parser.add_argument('--process-blocksize', '--process_blocksize',
+                             dest='process_blocksize',
+                             type=inttuple,
+                             help='Output chunk size as a tuple (x,y,z).')
+    args_parser.add_argument('--mask',
+                             dest='mask',
+                             type=str,
+                             help = "Mask directory")
+    args_parser.add_argument('--mask-subpath', '--mask_subpath',
+                             dest='mask_subpath',
+                             type=str,
+                             help = "mask subpath")
+    args_parser.add_argument('--roi',
+                             dest='roi',
+                             type=inttuple,
+                             metavar="xmin,ymin,zmin,xmax,ymax,zmax",
+                             help='Fixed volume mask descriptor a tuple of 6 values representing min and max voxel coordinates')
     args_parser.add_argument('--label-distance-threshold', '--label-dist-th',
                              dest='label_dist_th',
                              type=float,
                              default=1.0,
                              help='Label distance transform threshold used for merging labels')
-    args_parser.add_argument('--output-chunk-size', '--output_chunk_size',
-                             dest='output_chunk_size',
-                             default=128,
-                             type=int,
-                             help='Output chunk size')
-    args_parser.add_argument('--compressor', '--compression',
-                             dest='compressor',
-                             default='zstd',
-                             help='Zarr array compression algorithm')
-    args_parser.add_argument('--compressor-opts', '--compression-opts',
-                             dest='compressor_opts',
-                             type=_dictfromjson,
-                             default={},
-                             help='Zarr array compression options')
-    args_parser.add_argument('--dask-scheduler', '--dask_scheduler',
-                             dest='dask_scheduler',
-                             type=str,
-                             default=None,
-                             help='TCP/IP address of an existing Dask scheduler')
-    args_parser.add_argument('--dask-config', '--dask_config',
-                             dest='dask_config',
-                             type=str,
-                             default=None,
-                             help='Dask configuration yaml file')
-    args_parser.add_argument('--local-dask-workers', '--local_dask_workers',
-                             dest='local_dask_workers',
-                             type=int,
-                             default=0,
-                             help='Number of workers when using a local cluster')
-    args_parser.add_argument('--worker-cpus', '--worker_cpus',
-                             dest='worker_cpus',
-                             type=int,
-                             default=1,
-                             help='Number of CPUs allocated to a dask worker')
+
+    distributed_args = args_parser.add_argument_group("Distributed Arguments")
+    distributed_args.add_argument('--dask-scheduler', '--dask_scheduler',
+                                  dest='dask_scheduler',
+                                  type=str,
+                                  default=None,
+                                  help='The TCP/IP address (tcp://x.x.x.x:port) of the Dask scheduler used for distributing cellpose over an existing dask cluster')
+    distributed_args.add_argument('--dask-config', '--dask_config',
+                                  dest='dask_config',
+                                  type=str,
+                                  default=None,
+                                  help='Dask configuration yaml file')
+    distributed_args.add_argument('--local-dask-workers', '--local_dask_workers',
+                                  dest='local_dask_workers',
+                                  type=int,
+                                  default=0,
+                                  help='Number of workers when using a local cluster')
+    distributed_args.add_argument('--worker-cpus', '--worker_cpus',
+                                  dest='worker_cpus',
+                                  type=int,
+                                  default=1,
+                                  help='Number of cpus allocated to a dask worker')
+
     args_parser.add_argument('--logging-config',
                              dest='logging_config',
                              type=str,
@@ -125,43 +143,69 @@ def _run_merge(args):
                                               worker_cpus=args.worker_cpus)
         dask_client.register_plugin(worker_config, name='WorkerConfig')
 
-    working_dir = args.working_dir
-    logger.info(f'Loading block metadata from {working_dir}')
-    label_block_indices = np.load(f'{working_dir}/label-block-indices.npy', allow_pickle=True)
-    faces = np.load(f'{working_dir}/block-faces.npy', allow_pickle=True)
-    boxes = list(np.load(f'{working_dir}/label-boxes.npy', allow_pickle=True))
-    all_box_ids = np.load(f'{working_dir}/label-boxes-ids.npy')
+    input_labels_attrs = read_array_attrs(args.input, args.input_subpath)
+    logger.info(f'Labels image {args.input}:{args.input_subpath} attributes: {input_labels_attrs}')
 
-    input_image_attrs = read_array_attrs(args.input, args.input_subpath)
-    input_image_shape = input_image_attrs['array_shape']
-    image_ndim = input_image_attrs['array_ndim']
+    input_labels_shape = input_labels_attrs['array_shape']
 
-    non_spatial_axes = get_non_spatial_axes(input_image_attrs).values()
-    labels_shape = tuple(input_image_shape[di]
+    non_spatial_axes = get_non_spatial_axes(input_labels_attrs).values()
+    labels_shape = tuple(input_labels_shape[di]
                          if di not in non_spatial_axes else 1
-                         for di in range(len(input_image_shape)))
-
+                         for di in range(len(input_labels_shape)))
+    output_path = args.output if args.output else args.input
     output_subpath = args.output_subpath if args.output_subpath else args.input_subpath
 
-    if non_spatial_axes:
-        output_blocksize = (1,) * len(non_spatial_axes) + (args.output_chunk_size,) * (image_ndim - len(non_spatial_axes))
+    input_labels_array = open_array(input_labels_attrs['array_storepath'], input_labels_attrs['array_subpath'])
+    output_chunksize = input_labels_array.chunks
+    if output_path != args.input and output_subpath != args.input_subpath:
+        logger.info(f'Merged labels will overwrite {output_path}:{output_subpath}')
+        output_labels_array = input_labels_array
     else:
-        output_blocksize = (args.output_chunk_size,) * image_ndim
+        logger.info((
+            f'Create output labels zarr {args.output}:{output_subpath} '
+            f'shape: {labels_shape}, chunksize: {output_chunksize}'
+        ))
+        input_labels_transforms = input_labels_attrs.get('array_transforms', {})
+        logger.debug(f'Input labels trnsforms: {input_labels_transforms}')
+        ome_metadata = create_ome_metadata(
+            os.path.basename(output_path),
+            output_subpath,
+            input_labels_attrs.get('array_axes'),
+            input_labels_transforms.get('scale'),
+            input_labels_transforms.get('translation'),
+            input_labels_attrs.get('array_ndim'),
+            ome_version='0.4'
+        )
+        output_labels_array = create_zarr_array(
+            output_path,
+            output_subpath,
+            labels_shape,
+            output_chunksize,
+            input_labels_array.dtype,
+            compressor=args.compressor,
+            compression_opts=args.compressor_opts,
+            parent_array_attrs=ome_metadata,
+            zarr_format=args.zarr_format,
+        )
+    if args.process_blocksize is not None:
+        # process_blocksize are specified (as X,Y,Z) so revert them
+        process_blocksize = args.process_blocksize[::-1]
+    else:
+        process_blocksize = output_chunksize
 
-    logger.info((
-        f'Create output labels zarr {args.output}:{output_subpath} '
-        f'shape: {labels_shape}, chunksize: {output_blocksize}'
-    ))
-    labels_zarr = create_zarr_array(
-        args.output,
-        output_subpath,
-        labels_shape,
-        output_blocksize,
-        'uint32',
-        compressor=args.compressor,
-    )
     # call distributed label merge
-    # TODO
+    output_labels, boxes = distributed_merge(
+        input_labels_array,
+        process_blocksize,
+        output_labels_array,
+        args.working_dir,
+        dask_client,
+        mask=None,
+        roi=args.roi,
+        label_dist_th=args.label_dist_th,
+    )
+    nlabels = len(boxes)
+    logger.info(f'Finished labels merge process. Found {nlabels-1} labels')
 
     dask_client.close()
 

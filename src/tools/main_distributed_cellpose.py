@@ -57,21 +57,11 @@ def _define_args():
                              type=floattuple,
                              metavar='X,Y,Z',
                              help = "Spatial voxel spacing as X,Y,Z")
-
-    args_parser.add_argument('--mask',
-                             dest='mask',
-                             type=str,
-                             help = "Mask directory")
-    args_parser.add_argument('--mask-subpath', '--mask_subpath',
-                             dest='mask_subpath',
-                             type=str,
-                             help = "mask subpath")
-
-    args_parser.add_argument('--roi',
-                             dest='roi',
-                             type=inttuple,
-                             metavar="xmin,ymin,zmin,xmax,ymax,zmax",
-                             help='Fixed volume mask descriptor a tuple of 6 values representing min and max voxel coordinates')
+    args_parser.add_argument('--expansion-factor', '--expansion_factor',
+                             dest='expansion_factor',
+                             type=float,
+                             default=0.,
+                             help='Sample expansion factor')
 
     args_parser.add_argument('-o','--output',
                              dest='output',
@@ -118,47 +108,90 @@ def _define_args():
                              type=str,
                              help = "output file")
 
-    args_parser.add_argument('--process-blocksize', '--process_blocksize',
-                             dest='process_blocksize',
-                             type=inttuple,
-                             help='Output chunk size as a tuple (x,y,z).')
-    args_parser.add_argument('--blocks-overlaps', '--blocks_overlaps',
-                             dest='blocks_overlaps',
-                             type=inttuple,
-                             metavar='dX,dY,dZ',
-                             help='Blocks overlaps as a tuple (x,y,z).')
-    args_parser.add_argument('--max-size-fraction', '--max_size_fraction',
-                             dest='max_size_fraction',
-                             type=float,
-                             default=0.4,
-                             help='Fraction of the total image for which the masks are discarded')
-    args_parser.add_argument('--norm-lowhigh', '--norm_lowhigh',
-                             dest='norm_lowhigh',
-                             nargs=2,  # Require exactly two values
-                             metavar=('VALUE1', 'VALUE2'),
-                             help="Provide two values to set low and high normalize value")
-    args_parser.add_argument('--normalize-sharpen-radius', '--normalize_sharpen_radius',
-                             dest='normalize_sharpen_radius',
-                             type=float,
-                             default=0,
-                             help='Sharpen radius used for normalization')
-    args_parser.add_argument('--normalize-smooth-radius', '--normalize_smooth_radius',
-                             dest='normalize_smooth_radius',
-                             type=float,
-                             default=0,
-                             help='Smooth radius used for normalization')
-    args_parser.add_argument('--normalize-invert', '--normalize_invert',
-                             dest='normalize_invert',
-                             action='store_true',
-                             default=False,
-                             help="Normalize invert")
-    args_parser.add_argument('--expansion-factor', '--expansion_factor',
-                             dest='expansion_factor',
-                             type=float,
-                             default=0.,
-                             help='Sample expansion factor')
+    cellpose_args = args_parser.add_argument_group("Additional Cellpose Arguments")
+    cellpose_args.add_argument('--norm-lowhigh', '--norm_lowhigh',
+                               dest='norm_lowhigh',
+                               nargs=2,  # Require exactly two values
+                               metavar=('VALUE1', 'VALUE2'),
+                               help="Provide two values to set low and high normalize value")
+    cellpose_args.add_argument('--normalize-sharpen-radius', '--normalize_sharpen_radius',
+                               dest='normalize_sharpen_radius',
+                               type=float,
+                               default=0,
+                               help='Sharpen radius used for normalization')
+    cellpose_args.add_argument('--normalize-smooth-radius', '--normalize_smooth_radius',
+                               dest='normalize_smooth_radius',
+                               type=float,
+                               default=0,
+                               help='Smooth radius used for normalization')
+    cellpose_args.add_argument('--normalize-invert', '--normalize_invert',
+                               dest='normalize_invert',
+                               action='store_true',
+                               default=False,
+                               help="Normalize invert")
+    cellpose_args.add_argument('--device',
+                               type=str,
+                               default='0',
+                               dest='device',
+                               help='which device to use, use an integer for torch, or mps for M1')
+    cellpose_args.add_argument('--models-dir', '--models_dir',
+                               dest='models_dir',
+                               type=str,
+                               help='cache cellpose models directory')
+    cellpose_args.add_argument('--model', '--pretrained-model',
+                               dest='segmentation_model',
+                               type=str,
+                               default='cpsam',
+                               help='A builtin segmentation model or a model added to the cellpose models directory')
 
-    distributed_args = args_parser.add_argument_group("Distributed Arguments")
+    distributed_args = args_parser.add_argument_group("Distributed Cellpose Arguments")
+    distributed_args.add_argument('--preprocessing-steps', '--preprocessing_steps',
+                                  dest='preprocessing_steps',
+                                  type=stringlist,
+                                  default=[],
+                                  help='Preprocessing steps to run before cellpose')
+
+    distributed_args.add_argument('--preprocessing-config', '--preprocessing_config',
+                                  dest='preprocessing_config',
+                                  type=str,
+                                  help='YAML file containing parameters for the preprocessing steps')
+    distributed_args.add_argument('--process-blocksize', '--process_blocksize',
+                                  dest='process_blocksize',
+                                  type=inttuple,
+                                  help='Output chunk size as a tuple (x,y,z).')
+    distributed_args.add_argument('--blocks-overlaps', '--blocks_overlaps',
+                                  dest='blocks_overlaps',
+                                  type=inttuple,
+                                  metavar='dX,dY,dZ',
+                                  help='Blocks overlaps as a tuple (x,y,z).')
+    distributed_args.add_argument('--mask',
+                                  dest='mask',
+                                  type=str,
+                                  help = "Mask directory")
+    distributed_args.add_argument('--mask-subpath', '--mask_subpath',
+                                  dest='mask_subpath',
+                                  type=str,
+                                  help = "mask subpath")
+    distributed_args.add_argument('--roi',
+                                  dest='roi',
+                                  type=inttuple,
+                                  metavar="xmin,ymin,zmin,xmax,ymax,zmax",
+                                  help='Fixed volume mask descriptor a tuple of 6 values representing min and max voxel coordinates')
+    distributed_args.add_argument('--max-size-fraction', '--max_size_fraction',
+                                  dest='max_size_fraction',
+                                  type=float,
+                                  default=0.4,
+                                  help='Fraction of the total image for which the masks are discarded')
+    distributed_args.add_argument('--skip-merge-labels', '--skip_merge_labels',
+                                  dest='skip_merge_labels',
+                                  action='store_true',
+                                  default=False,
+                                  help='Skip label merging across blocks and save boxes/box_ids to the working dir')
+    distributed_args.add_argument('--label-distance-threshold', '--label-dist-th',
+                                  dest='label_dist_th',
+                                  type=float,
+                                  default=1.0,
+                                  help='Label distance transform threshold used for merging labels')
     distributed_args.add_argument('--dask-scheduler', '--dask_scheduler',
                                   dest='dask_scheduler',
                                   type=str,
@@ -179,46 +212,10 @@ def _define_args():
                                   type=int,
                                   default=1,
                                   help='Number of cpus allocated to a dask worker')
-    distributed_args.add_argument('--device',
-                                  type=str,
-                                  default='0',
-                                  dest='device',
-                                  help='which device to use, use an integer for torch, or mps for M1')    
-    distributed_args.add_argument('--models-dir', '--models_dir',
-                                  dest='models_dir',
-                                  type=str,
-                                  help='cache cellpose models directory')
-    distributed_args.add_argument('--model', '--pretrained-model',
-                                  dest='segmentation_model',
-                                  type=str,
-                                  default='cpsam',
-                                  help='A builtin segmentation model or a model added to the cellpose models directory')
-    distributed_args.add_argument('--label-distance-threshold', '--label-dist-th',
-                                  dest='label_dist_th',
-                                  type=float,
-                                  default=1.0,
-                                  help='Label distance transform threshold used for merging labels')
-    
-    distributed_args.add_argument('--skip-merge-labels', '--skip_merge_labels',
-                                  dest='skip_merge_labels',
-                                  action='store_true',
-                                  default=False,
-                                  help='Skip label merging across blocks and save boxes/box_ids to the working dir')
 
-    distributed_args.add_argument('--preprocessing-steps', '--preprocessing_steps',
-                                  dest='preprocessing_steps',
-                                  type=stringlist,
-                                  default=[],
-                                  help='Preprocessing steps to run before cellpose')
-
-    distributed_args.add_argument('--preprocessing-config', '--preprocessing_config',
-                                  dest='preprocessing_config',
-                                  type=str,
-                                  help='YAML file containing parameters for the preprocessing steps')
-    
-    distributed_args.add_argument('--logging-config', dest='logging_config',
-                                  type=str,
-                                  help='python log file configuration')
+    args_parser.add_argument('--logging-config', dest='logging_config',
+                             type=str,
+                             help='python log file configuration')
 
     return args_parser
 

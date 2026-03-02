@@ -723,23 +723,42 @@ def distributed_merge(
 def _get_label_merge_info(
     block_index,
     crop,
-    labels_zarr
+    labels_zarr,
+    labels_ndim=3,
 ):
     logger.debug((
         f'Get label block info from block {block_index} at {crop} '
         f'from an image of shape {labels_zarr.shape} '
     ))
-    labels_block = labels_zarr[tuple(crop)]
+    block = labels_zarr[crop]
+    block_shape = block.shape
+
+    if len(block_shape) > labels_ndim:
+        # all merging is done in 3D so if the image has extra dimensions
+        # then those need to be squeezed out
+        labels_block_index = block_index[-labels_ndim:]
+        labels_coords = crop[-labels_ndim:]
+        labels_block = block.reshape(block_shape[-labels_ndim:])
+        logger.debug((
+            f'Adjusted labels block index {block_index} -> {labels_block_index}; '
+            f'labels block coords {crop} -> {labels_coords}; '
+            f'labels block shape {block_shape} -> {labels_block.shape}; '
+        ))
+    else:
+        labels_block_index = block_index
+        labels_coords = crop
+        labels_block = block
+
     faces = _block_faces(labels_block)
 
     label_ids = np.unique(labels_block)
     if label_ids[0] == 0:
         label_ids = label_ids[1:]
 
-    boxes = _bounding_boxes_in_global_coordinates(labels_block, crop)
+    boxes = _bounding_boxes_in_global_coordinates(labels_block, labels_coords)
     faces = _block_faces(labels_block)
 
-    return block_index, faces, boxes, label_ids
+    return labels_block_index, faces, boxes, label_ids
 
 
 def _determine_merge_relabeling(block_indices, faces, labels,
