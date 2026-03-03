@@ -624,7 +624,7 @@ def _merge_labels(label_block_indices, faces, boxes, all_label_ids,
     ))
     new_labeling = _determine_merge_relabeling(label_block_indices, faces, all_label_ids,
                                                label_dist_th=label_dist_th)
-    new_labeling_path = f'{output_dir}/new_labeling.npy'
+    new_labeling_path = f'{output_dir}/new_labeling.npy' if output_dir  else 'new_labeling.npy'
     _write_new_labeling(new_labeling_path, new_labeling)
 
     logger.info(f'Relabel {all_label_ids.shape} blocks from {new_labeling_path}')
@@ -873,7 +873,8 @@ def _merge_boxes(boxes):
 
 def _write_new_labeling(new_labeling_path, new_labeling):
     new_labeling_dir = os.path.dirname(new_labeling_path)
-    os.makedirs(new_labeling_dir, exist_ok=True)
+    if new_labeling_dir:
+        os.makedirs(new_labeling_dir, exist_ok=True)
     logger.info(f'Save new label assignment to {new_labeling_path}')
     np.save(new_labeling_path, new_labeling)
 
@@ -886,6 +887,6 @@ def _relabel_block(block_coords, new_labeling=None,
         logger.info(f'Relabel block: {block_coords}')
         block = source[block_coords]
         new_labeling_array = np.load(new_labeling)
-        logger.info(f'Apply {len(new_labeling_array)} to {block.shape} at {block_coords}')
+        logger.info(f'Apply {len(new_labeling_array)} labels to a block of shape {block.shape} at {block_coords}')
         target[block_coords] = new_labeling_array[block]
         return True

@@ -63,10 +63,7 @@ def _define_args():
     args_parser.add_argument('--working-dir', '--working_dir',
                              dest='working_dir',
                              type=str,
-                             required=True,
-                             help='Directory containing the saved block metadata files '
-                                  '(label-block-indices.npy, block-faces.npy, '
-                                  'label-boxes.npy, label-boxes-ids.npy)')
+                             help='Directory for saving label re-assignment')
     args_parser.add_argument('--process-blocksize', '--process_blocksize',
                              dest='process_blocksize',
                              type=inttuple,
