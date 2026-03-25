@@ -109,6 +109,11 @@ def _define_args():
                              help = "output file")
 
     cellpose_args = args_parser.add_argument_group("Additional Cellpose Arguments")
+    cellpose_args.add_argument('--cell-diameter',
+                               dest='cell_diameter',
+                               type=floattuple,
+                               metavar=('dx','dy','dz'),
+                               help="Cell diameter")
     cellpose_args.add_argument('--norm-lowhigh', '--norm_lowhigh',
                                dest='norm_lowhigh',
                                nargs=2,  # Require exactly two values
@@ -338,8 +343,15 @@ def _run_segmentation(args):
                 'tile_norm_smooth3D': 1,
                 'invert': args.normalize_invert,
             }
+            if args.cell_diameter:
+                if len(args.cell_diameter) > 1:
+                    cell_diameter = list(args.cell_diameter)
+                else:
+                    cell_diameter = args.cell_diameter[0]
+            else:
+                cell_diameter = None
             cellpose_eval_args = {
-                'diameter': args.diameter,
+                'diameter': cell_diameter,
                 'do_3D': args.do_3D,
                 'min_size': args.min_size,
                 'max_size_fraction': args.max_size_fraction,
