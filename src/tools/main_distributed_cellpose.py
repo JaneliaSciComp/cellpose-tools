@@ -352,6 +352,7 @@ def _run_segmentation(args):
                 cell_diameter = None
             cellpose_eval_args = {
                 'diameter': cell_diameter,
+                'resample': not args.no_resample,
                 'do_3D': args.do_3D,
                 'min_size': args.min_size,
                 'max_size_fraction': args.max_size_fraction,
@@ -363,7 +364,7 @@ def _run_segmentation(args):
                 'cellprob_threshold': args.cellprob_threshold,
                 'stitch_threshold': args.stitch_threshold,
                 'flow3D_smooth': args.flow3D_smooth,
-                'batch_size': 8,
+                'batch_size': args.batch_size,
             }
             input_image_array = open_array(input_image_attrs['array_storepath'], input_image_attrs['array_subpath'])
             labels_zarr = _create_output_labels_zarr(args, input_image_attrs)
