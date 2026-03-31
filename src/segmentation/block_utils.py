@@ -18,7 +18,8 @@ def get_block_crops(shape, blocksize, overlaps, mask, roi):
     blockoverlaps = np.array(overlaps, dtype=int) if overlaps else 0
 
     if mask is not None:
-        mask_ratio = np.array(mask.shape) / shape
+        mask_ratio = np.array(mask.shape) / shape[-3:] # shape may be 5-D so only consider the spatial shape
+        logger.info(f'Mask ratio for {mask.shape} mask and {shape} image: {mask_ratio}')
     else:
         mask_ratio = 0
 
@@ -45,7 +46,7 @@ def is_foreground_block(block, mask, mask_image_ratio, roi, image_shape):
     if mask is None and roi is None:
         return True
 
-    spatial_crop = block[-3:]
+    spatial_crop = block[-3:] # consider only the spatial shape
     if mask is not None:
         mask_crop = tuple(
             slice(
