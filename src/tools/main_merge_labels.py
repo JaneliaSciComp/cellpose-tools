@@ -1,6 +1,5 @@
 import argparse
 import logging
-import numpy as np
 import os
 import sys
 import traceback
@@ -8,6 +7,8 @@ import traceback
 from dask.distributed import Client, LocalCluster
 
 from io_utils.read_utils import open_array, read_array_attrs
+
+from pathlib import Path
 
 from segmentation.distributed_cellpose import distributed_merge
 
@@ -190,14 +191,22 @@ def _run_merge(args):
     else:
         process_blocksize = output_chunksize
 
+    if args.mask and Path(args.mask).exists():
+        # read the mask
+        logger.info(f'Read foreground mask from {args.mask}:{args.mask_subpath}')
+        mask = open_array(args.mask, args.mask_subpath)
+    else:
+        logger.info('No foreground mask')
+        mask = None
+
     # call distributed label merge
-    output_labels, boxes = distributed_merge(
+    _, boxes = distributed_merge(
         input_labels_array,
         process_blocksize,
         output_labels_array,
         args.working_dir,
         dask_client,
-        mask=None,
+        mask=mask,
         roi=args.roi,
         label_dist_th=args.label_dist_th,
     )

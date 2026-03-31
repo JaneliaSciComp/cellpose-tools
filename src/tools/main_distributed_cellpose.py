@@ -14,6 +14,8 @@ from io_utils.write_utils import container_type, write_zarray_as
 
 from math import floor
 
+from pathlib import Path
+
 from segmentation.distributed_cellpose import (distributed_eval, local_eval)
 from segmentation.preprocessing import get_preprocessing_steps
 
@@ -282,7 +284,15 @@ def _run_segmentation(args):
         voxel_spacing = (1,) * (3 if args.do_3D else 2)
 
     logger.info(f'Image data shape/dim/dtype/spacing: {input_image_shape}, {input_image_ndim}, {input_image_dtype}, {voxel_spacing}')
-    
+
+    if args.mask and Path(args.mask).exists():
+        # read the mask
+        logger.info(f'Read foreground mask from {args.mask}:{args.mask_subpath}')
+        mask = open_array(args.mask, args.mask_subpath)
+    else:
+        logger.info('No foreground mask')
+        mask = None
+
     if args.output:
         try:
             if args.anisotropy and args.anisotropy != 1.0:
@@ -405,7 +415,7 @@ def _run_segmentation(args):
                     labels_zarr,
                     dask_client,
                     blockoverlaps=blocks_overlaps,
-                    mask=None,
+                    mask=mask,
                     roi=args.roi,
                     preprocessing_steps=preprocessing_steps,
                     cellpose_model_args=cellpose_model_args,
