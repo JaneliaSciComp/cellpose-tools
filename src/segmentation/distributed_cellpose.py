@@ -633,7 +633,8 @@ def _merge_labels(label_block_indices, faces, boxes, all_label_ids,
     )
     total_chunks = len(label_slices)
     if mask is not None or roi is not None:
-        mask_image_ratio = np.array(mask.shape) / target_labels_zarr.shape if mask is not None else 0
+        mask_image_ratio = np.array(mask.shape) / target_labels_zarr.shape[-3:] if mask is not None else 0
+        logger.info(f'Mask image ratio for {mask.shape} mask and {target_labels_zarr.shape} labels image: {mask_image_ratio}')
         label_slices = [
             crop for crop in label_slices
             if is_foreground_block(crop, mask, mask_image_ratio, roi, target_labels_zarr.shape)
@@ -650,7 +651,8 @@ def _merge_labels(label_block_indices, faces, boxes, all_label_ids,
     for f, r in as_completed(relabel_futures, with_results=True):
         if f.cancelled():
             tb = f.traceback()
-            logger.error(f'Block relabel error: {''.join(traceback.format_tb(tb))}')
+            stacktrace = ''.join(traceback.format_tb(tb))
+            logger.error(f'Block relabel error: {stacktrace}')
             relabel_res = False
         else:
             relabel_res = relabel_res and r
