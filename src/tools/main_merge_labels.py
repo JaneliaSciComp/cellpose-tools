@@ -81,7 +81,7 @@ def _define_args():
                              dest='roi',
                              type=inttuple,
                              metavar="xmin,ymin,zmin,xmax,ymax,zmax",
-                             help='Fixed volume mask descriptor a tuple of 6 values representing min and max voxel coordinates')
+                             help='Volume ROI descriptor a tuple of 6 values representing min and max voxel coordinates')
     args_parser.add_argument('--label-distance-threshold', '--label-dist-th',
                              dest='label_dist_th',
                              type=float,
