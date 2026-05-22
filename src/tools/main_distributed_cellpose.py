@@ -24,7 +24,7 @@ from utils.configure_dask import (load_dask_config, ConfigureWorkerPlugin)
 
 from zarr_tools.ngff.ngff_utils import (create_ome_metadata, get_axes_dictindex,
                                         get_non_spatial_axes, get_spatial_dataset_voxel_spacing)
-from zarr_tools.io.zarr_io import create_zarr_array
+from zarr_tools.io.zarr_io import create_zarr_array, derive_shard_shape
 
 from .cli import dictfromjson, floattuple, inttuple, intlist, stringlist
 from .download_models import download_cellpose_models
@@ -103,6 +103,13 @@ def _define_args():
                              default=2,
                              dest='zarr_format',
                              help='Zarr format (2 or 3 for v2 or v3)')
+    args_parser.add_argument('--sharding-factor', '--sharding_factor',
+                             dest='sharding_factor',
+                             type=inttuple,
+                             default=(),
+                             metavar='SX,SY,SZ',
+                             help='Sharding factor per spatial axis (zarr v3 only). '
+                                  'Shard size = output_blocksize * factor.')
 
     args_parser.add_argument('--working-dir', '--working_dir',
                              dest='working_dir',
@@ -377,21 +384,31 @@ def _run_segmentation(args):
                 'batch_size': args.batch_size,
             }
             input_image_array = open_array(input_image_attrs['array_storepath'], input_image_attrs['array_subpath'])
-            labels_zarr = _create_output_labels_zarr(args, input_image_attrs)
+            labels_zarr, shard_shape = _create_output_labels_zarr(args, input_image_attrs)
             if dask_client is not None:
                 # set the process size and the blocks overlap
+                output_chunks_spatial = np.array(labels_zarr.chunks[-3:])
+                effective_output_block = (
+                    np.array(shard_shape[-3:]) if shard_shape is not None
+                    else output_chunks_spatial
+                )
                 if args.process_blocksize is not None:
-                    # process_blocksize are specified (as X,Y,Z) so revert them
-                    process_blocksize = args.process_blocksize[::-1]
-                    output_chunks = np.array(labels_zarr.chunks[-3:])
-                    if np.any(output_chunks > process_blocksize):
-                        logger.error(f'Process size {process_blocksize} must be >= spatial values of {labels_zarr.chunks}')
-                        raise ValueError((
-                            f'Processing block size {process_blocksize} is too small '
-                            f'compared to chunk size: {output_chunks}'
-                        ))
+                    # process_blocksize are specified as X,Y,Z so revert them to Z,Y,X,
+                    # then clamp up to the effective output block size (shard or chunk)
+                    process_blocksize = tuple(
+                        int(max(pb, ob))
+                        for pb, ob in zip(args.process_blocksize[::-1], effective_output_block)
+                    )
+                    if process_blocksize != tuple(int(x) for x in args.process_blocksize[::-1]):
+                        logger.info(
+                            f'process_blocksize adjusted from {args.process_blocksize[::-1]} '
+                            f'to {process_blocksize} to align with effective output block {tuple(effective_output_block)}'
+                        )
                 else:
-                    process_blocksize = input_image_shape # process the whole image
+                    if shard_shape is not None:
+                        process_blocksize = tuple(int(x) for x in effective_output_block)
+                    else:
+                        process_blocksize = input_image_shape  # process the whole image
 
                 if args.blocks_overlaps is not None:
                     # blocks_overlaps are also specified as dX,dY,dZ overlaps 
@@ -514,13 +531,30 @@ def _create_output_labels_zarr(args, image_attrs, labels_dtype='uint32'):
         else:
             output_blocksize = (1,) * len(non_spatial_axes) + (args.output_chunk_size,) * (image_ndim - len(non_spatial_axes))
 
+    if args.sharding_factor:
+        if len(args.sharding_factor) < len(output_blocksize):
+            sharding_factor = (args.sharding_factor + (1,) * (len(output_blocksize) - len(args.output_blocksize)))[::-1]
+        else:
+            # just like for the blocksize we already have the correct number of dimensions
+            # just reverse the sharding factor because in the command line we specify it as x,y,z[,c,t]
+            sharding_factor = args.sharding_factor[::-1]
+    else:
+        sharding_factor = None
+
+    shard_shape = derive_shard_shape(
+        output_blocksize,
+        args.zarr_format,
+        sharding_factor,
+    )
+
     logger.info((
         f'Create labels zarr {labels_zarr_path}:{labels_array_subpath} '
         f'zarr format: {args.zarr_format}, shape: {labels_shape}, chunksize: {output_blocksize} '
+        f'shard_shape: {shard_shape} '
         f'compressor: {args.compressor} '
     ))
 
-    return create_zarr_array(
+    labels_zarr = create_zarr_array(
         labels_zarr_path,
         labels_array_subpath,
         labels_shape,
@@ -530,7 +564,9 @@ def _create_output_labels_zarr(args, image_attrs, labels_dtype='uint32'):
         compression_opts=args.compressor_opts,
         parent_array_attrs=ome_metadata,
         zarr_format=args.zarr_format,
+        shard_shape=shard_shape,
     )
+    return labels_zarr, shard_shape
 
 
 def _update_image_label_attrs(labels_zarr:zarr.Array, nlabels):
