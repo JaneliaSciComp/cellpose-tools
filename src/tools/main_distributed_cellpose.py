@@ -385,6 +385,7 @@ def _run_segmentation(args):
             }
             input_image_array = open_array(input_image_attrs['array_storepath'], input_image_attrs['array_subpath'])
             labels_zarr, shard_shape = _create_output_labels_zarr(args, input_image_attrs)
+            logger.info(f'Output format/shard shape: {args.zarr_format}/{shard_shape}')
             if dask_client is not None:
                 # set the process size and the blocks overlap
                 output_chunks_spatial = np.array(labels_zarr.chunks[-3:])
@@ -392,6 +393,7 @@ def _run_segmentation(args):
                     np.array(shard_shape[-3:]) if shard_shape is not None
                     else output_chunks_spatial
                 )
+                logger.info(f'Effective output block shape: {effective_output_block}')
                 if args.process_blocksize is not None:
                     # process_blocksize are specified as X,Y,Z so revert them to Z,Y,X,
                     # then clamp up to the effective output block size (shard or chunk)
@@ -443,6 +445,7 @@ def _run_segmentation(args):
                 )
                 nlabels = len(boxes)
             else:
+                logger.info('Run local eval')
                 input_image_array = open_array(input_image_attrs['array_storepath'], input_image_attrs['array_subpath'])
                 output_labels, nlabels = local_eval(
                     input_image_array,
@@ -496,6 +499,7 @@ def _create_output_labels_zarr(args, image_attrs, labels_dtype='uint32'):
         labels_array_subpath = output_subpath
         image_transforms = image_attrs.get('array_transforms', {})
         ome_version = '0.4' if args.zarr_format == 2 else '0.5'
+        logger.info(f'Create OME {ome_version}')
         ome_metadata = create_ome_metadata(
             os.path.basename(labels_zarr_path),
             labels_array_subpath,
@@ -542,6 +546,7 @@ def _create_output_labels_zarr(args, image_attrs, labels_dtype='uint32'):
     else:
         sharding_factor = None
 
+    logger.info(f'Output blocksize: {output_blocksize}, sharding factor: {sharding_factor}')
     shard_shape = derive_shard_shape(
         output_blocksize,
         args.zarr_format,
