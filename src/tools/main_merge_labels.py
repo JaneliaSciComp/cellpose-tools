@@ -1,5 +1,6 @@
 import argparse
 import logging
+from math import ceil
 import os
 import sys
 import traceback
@@ -163,6 +164,7 @@ def _run_merge(args):
 
     input_labels_array = open_array(input_labels_attrs['array_storepath'], input_labels_attrs['array_subpath'])
     output_chunksize = input_labels_array.chunks
+    shard_shape = None
     if output_path != args.input and output_subpath != args.input_subpath:
         logger.info(f'Merged labels will overwrite {output_path}:{output_subpath}')
         output_labels_array = input_labels_array
@@ -189,10 +191,10 @@ def _run_merge(args):
         if args.output_blocksize is not None:
             # if output blocksize is specified, use it but 
             # ensure that it has the same number of dimensions as the input image
-            if len(args.output_blocksize) < image_ndim:
+            if len(args.output_blocksize) < labels_ndim:
                 # make the chunksize 1 for missing dimensions
                 # also since the output blocksize is specified as X,Y,Z - revert it to Z,Y,X
-                output_blocksize = (args.output_blocksize + (1,) * (image_ndim - len(args.output_blocksize)))[::-1]
+                output_blocksize = (args.output_blocksize + (1,) * (labels_ndim - len(args.output_blocksize)))[::-1]
             else:
                 # the blocksize already has the same number of dimensions as the input,
                 # just reverse it because in the command line we specify as x,y,z[,c,t]
@@ -240,11 +242,25 @@ def _run_merge(args):
             zarr_format=args.zarr_format,
             shard_shape=shard_shape,
         )
-    if args.process_blocksize is not None:
-        # process_blocksize are specified (as X,Y,Z) so revert them
-        process_blocksize = args.process_blocksize[::-1]
+    if shard_shape is not None:
+        spatial_shard = tuple(int(x) for x in shard_shape[-3:])
+        if args.process_blocksize is not None:
+            pb = tuple(int(x) for x in args.process_blocksize[::-1])
+            if all(p % s == 0 for p, s in zip(pb, spatial_shard)):
+                process_blocksize = pb
+            else:
+                process_blocksize = tuple(int(ceil(p / s)) * s for p, s in zip(pb, spatial_shard))
+                logger.warning(
+                    f'process_blocksize {args.process_blocksize[::-1]} is not an exact multiple of '
+                    f'shard_shape {spatial_shard}, rounding up to {process_blocksize}'
+                )
+        else:
+            process_blocksize = spatial_shard
     else:
-        process_blocksize = output_chunksize
+        if args.process_blocksize is not None:
+            process_blocksize = args.process_blocksize[::-1]
+        else:
+            process_blocksize = output_chunksize
 
     if args.mask and Path(args.mask).exists():
         # read the mask

@@ -156,7 +156,7 @@ def distributed_eval(
     all_label_ids = np.array([], dtype=np.uint32)
 
     for f, r in as_completed(futures, with_results=True):
-        if f.cancelled():
+        if f.cancelled() or f.status == 'error':
             tb = f.traceback()
             logger.error(f'Block segmenting error: {''.join(traceback.format_tb(tb))}')
         else:
@@ -166,6 +166,8 @@ def distributed_eval(
             faces.append(bfs)
             boxes.extend(bboxes)
             all_label_ids = np.concatenate([all_label_ids, blids]).astype(np.uint32)
+
+    dask_client.run(os.sync)
 
     logger.info((
         f'Finished segmenting: {len(block_indices)} {blocksize} blocks '

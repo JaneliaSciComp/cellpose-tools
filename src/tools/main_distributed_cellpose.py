@@ -12,7 +12,7 @@ from dask.distributed import (Client, LocalCluster)
 from io_utils.read_utils import open_array, read_array_attrs
 from io_utils.write_utils import container_type, write_zarray_as
 
-from math import floor
+from math import ceil, floor
 
 from pathlib import Path
 
@@ -394,21 +394,33 @@ def _run_segmentation(args):
                     else output_chunks_spatial
                 )
                 logger.info(f'Effective output block shape: {effective_output_block}')
-                if args.process_blocksize is not None:
-                    # process_blocksize are specified as X,Y,Z so revert them to Z,Y,X,
-                    # then clamp up to the effective output block size (shard or chunk)
-                    process_blocksize = tuple(
-                        int(max(pb, ob))
-                        for pb, ob in zip(args.process_blocksize[::-1], effective_output_block)
-                    )
-                    if process_blocksize != tuple(int(x) for x in args.process_blocksize[::-1]):
-                        logger.info(
-                            f'process_blocksize adjusted from {args.process_blocksize[::-1]} '
-                            f'to {process_blocksize} to align with effective output block {tuple(effective_output_block)}'
-                        )
+                if shard_shape is not None:
+                    spatial_shard = tuple(int(x) for x in effective_output_block)
+                    if args.process_blocksize is not None:
+                        pb = tuple(int(x) for x in args.process_blocksize[::-1])
+                        if all(p % s == 0 for p, s in zip(pb, spatial_shard)):
+                            process_blocksize = pb
+                        else:
+                            process_blocksize = tuple(int(ceil(p / s)) * s for p, s in zip(pb, spatial_shard))
+                            logger.warning(
+                                f'process_blocksize {args.process_blocksize[::-1]} is not an exact multiple of '
+                                f'shard_shape {spatial_shard}, rounding up to {process_blocksize}'
+                            )
+                    else:
+                        process_blocksize = spatial_shard
                 else:
-                    if shard_shape is not None:
-                        process_blocksize = tuple(int(x) for x in effective_output_block)
+                    if args.process_blocksize is not None:
+                        # process_blocksize are specified as X,Y,Z so revert them to Z,Y,X,
+                        # then clamp up to the chunk size
+                        process_blocksize = tuple(
+                            int(max(pb, ob))
+                            for pb, ob in zip(args.process_blocksize[::-1], output_chunks_spatial)
+                        )
+                        if process_blocksize != tuple(int(x) for x in args.process_blocksize[::-1]):
+                            logger.info(
+                                f'process_blocksize adjusted from {args.process_blocksize[::-1]} '
+                                f'to {process_blocksize} to align with output chunks {tuple(output_chunks_spatial)}'
+                            )
                     else:
                         process_blocksize = input_image_shape  # process the whole image
 
@@ -420,7 +432,7 @@ def _run_segmentation(args):
                     blocks_overlaps = ()
 
                 logger.info((
-                    f'Invoke distributed segmentation {input_image_attrs['array_storepath']}:{input_image_attrs['array_subpath']} '
+                    f'Invoke distributed segmentation {input_image_attrs["array_storepath"]}:{input_image_attrs["array_subpath"]} '
                     f'timeindex: {input_timeindex}, input channels: {args.input_channels} '
                     f'process block size: {process_blocksize}, blocks overlaps: {blocks_overlaps}'
                 ))
