@@ -15,7 +15,7 @@ from segmentation.distributed_cellpose import distributed_merge
 from utils.configure_logging import configure_logging
 from utils.configure_dask import load_dask_config, ConfigureWorkerPlugin
 
-from zarr_tools.io.zarr_io import create_zarr_array
+from zarr_tools.io.zarr_io import create_zarr_array, derive_shard_shape
 from zarr_tools.ngff.ngff_utils import create_ome_metadata, get_non_spatial_axes
 
 from .cli import dictfromjson, inttuple
@@ -61,6 +61,14 @@ def _define_args():
                              default=2,
                              dest='zarr_format',
                              help='Zarr format (2 or 3 for v2 or v3)')
+    args_parser.add_argument('--sharding-factor', '--sharding_factor',
+                             dest='sharding_factor',
+                             type=inttuple,
+                             default=(),
+                             metavar='SX,SY,SZ',
+                             help='Sharding factor per spatial axis (zarr v3 only). '
+                                  'Shard size = output_blocksize * factor.')
+
     args_parser.add_argument('--working-dir', '--working_dir',
                              dest='working_dir',
                              type=str,
@@ -159,12 +167,15 @@ def _run_merge(args):
         logger.info(f'Merged labels will overwrite {output_path}:{output_subpath}')
         output_labels_array = input_labels_array
     else:
+        labels_ndim = input_labels_attrs['array_ndim']
         logger.info((
             f'Create output labels zarr {args.output}:{output_subpath} '
-            f'shape: {labels_shape}, chunksize: {output_chunksize}'
+            f'ndim: {labels_ndim}, shape: {labels_shape}, chunksize: {output_chunksize} '
         ))
         input_labels_transforms = input_labels_attrs.get('array_transforms', {})
-        logger.debug(f'Input labels trnsforms: {input_labels_transforms}')
+        logger.debug(f'Input labels transforms: {input_labels_transforms}')
+        ome_version = '0.4' if args.zarr_format == 2 else '0.5'
+        logger.info(f'Create OME {ome_version}')
         ome_metadata = create_ome_metadata(
             os.path.basename(output_path),
             output_subpath,
@@ -172,8 +183,51 @@ def _run_merge(args):
             input_labels_transforms.get('scale'),
             input_labels_transforms.get('translation'),
             input_labels_attrs.get('array_ndim'),
-            ome_version='0.4'
+            ome_version=ome_version
         )
+
+        if args.output_blocksize is not None:
+            # if output blocksize is specified, use it but 
+            # ensure that it has the same number of dimensions as the input image
+            if len(args.output_blocksize) < image_ndim:
+                # make the chunksize 1 for missing dimensions
+                # also since the output blocksize is specified as X,Y,Z - revert it to Z,Y,X
+                output_blocksize = (args.output_blocksize + (1,) * (image_ndim - len(args.output_blocksize)))[::-1]
+            else:
+                # the blocksize already has the same number of dimensions as the input,
+                # just reverse it because in the command line we specify as x,y,z[,c,t]
+                output_blocksize = args.output_blocksize[::-1]
+        else:
+            # default to output_chunk_size for spatial axes or 1 for the other axes
+            if non_spatial_axes == ():
+                output_blocksize = (args.output_chunk_size,) * labels_ndim
+            else:
+                output_blocksize = (1,) * len(non_spatial_axes) + (args.output_chunk_size,) * (image_ndim - len(non_spatial_axes))
+
+        if args.sharding_factor:
+            if len(args.sharding_factor) < len(output_blocksize):
+                sharding_factor = (args.sharding_factor + (1,) * (len(output_blocksize) - len(args.output_blocksize)))[::-1]
+            else:
+                # just like for the blocksize we already have the correct number of dimensions
+                # just reverse the sharding factor because in the command line we specify it as x,y,z[,c,t]
+                sharding_factor = args.sharding_factor[::-1]
+        else:
+            sharding_factor = None
+
+        logger.info(f'Output blocksize: {output_blocksize}, sharding factor: {sharding_factor}')
+        shard_shape = derive_shard_shape(
+            output_blocksize,
+            args.zarr_format,
+            sharding_factor,
+        )
+
+        logger.info((
+            f'Create labels zarr {output_path}:{output_subpath} '
+            f'zarr format: {args.zarr_format}, shape: {labels_shape}, chunksize: {output_blocksize} '
+            f'shard_shape: {shard_shape} '
+            f'compressor: {args.compressor} '
+        ))
+
         output_labels_array = create_zarr_array(
             output_path,
             output_subpath,
@@ -184,6 +238,7 @@ def _run_merge(args):
             compression_opts=args.compressor_opts,
             parent_array_attrs=ome_metadata,
             zarr_format=args.zarr_format,
+            shard_shape=shard_shape,
         )
     if args.process_blocksize is not None:
         # process_blocksize are specified (as X,Y,Z) so revert them
