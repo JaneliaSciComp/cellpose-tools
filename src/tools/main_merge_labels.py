@@ -188,24 +188,6 @@ def _run_merge(args):
             ome_version=ome_version
         )
 
-        if args.output_blocksize is not None:
-            # if output blocksize is specified, use it but 
-            # ensure that it has the same number of dimensions as the input image
-            if len(args.output_blocksize) < labels_ndim:
-                # make the chunksize 1 for missing dimensions
-                # also since the output blocksize is specified as X,Y,Z - revert it to Z,Y,X
-                output_blocksize = (args.output_blocksize + (1,) * (labels_ndim - len(args.output_blocksize)))[::-1]
-            else:
-                # the blocksize already has the same number of dimensions as the input,
-                # just reverse it because in the command line we specify as x,y,z[,c,t]
-                output_blocksize = args.output_blocksize[::-1]
-        else:
-            # default to output_chunk_size for spatial axes or 1 for the other axes
-            if non_spatial_axes == ():
-                output_blocksize = (args.output_chunk_size,) * labels_ndim
-            else:
-                output_blocksize = (1,) * len(non_spatial_axes) + (args.output_chunk_size,) * (image_ndim - len(non_spatial_axes))
-
         if args.sharding_factor:
             if len(args.sharding_factor) < len(output_blocksize):
                 sharding_factor = (args.sharding_factor + (1,) * (len(output_blocksize) - len(args.output_blocksize)))[::-1]
@@ -216,9 +198,9 @@ def _run_merge(args):
         else:
             sharding_factor = None
 
-        logger.info(f'Output blocksize: {output_blocksize}, sharding factor: {sharding_factor}')
+        logger.info(f'Output blocksize: {output_chunksize}, sharding factor: {sharding_factor}')
         shard_shape = derive_shard_shape(
-            output_blocksize,
+            output_chunksize,
             args.zarr_format,
             sharding_factor,
         )
