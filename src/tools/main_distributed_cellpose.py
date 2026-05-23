@@ -495,6 +495,7 @@ def _create_output_labels_zarr(args, image_attrs, labels_dtype='uint32'):
         labels_zarr_path = args.output
         labels_array_subpath = output_subpath
         image_transforms = image_attrs.get('array_transforms', {})
+        ome_version = '0.4' if args.zarr_format == 2 else '0.5'
         ome_metadata = create_ome_metadata(
             os.path.basename(labels_zarr_path),
             labels_array_subpath,
@@ -502,7 +503,7 @@ def _create_output_labels_zarr(args, image_attrs, labels_dtype='uint32'):
             image_transforms.get('scale'),
             image_transforms.get('translation'),
             image_attrs.get('array_ndim'),
-            ome_version='0.4'
+            ome_version=ome_version
         )
 
     image_ndim = image_attrs['array_ndim']
