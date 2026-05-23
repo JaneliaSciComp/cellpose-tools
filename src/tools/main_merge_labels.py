@@ -164,16 +164,16 @@ def _run_merge(args):
 
     input_labels_array = open_array(input_labels_attrs['array_storepath'], input_labels_attrs['array_subpath'])
     output_chunksize = input_labels_array.chunks
+    labels_ndim = input_labels_attrs['array_ndim']
     shard_shape = None
+    logger.info((
+        f'Create output labels zarr {args.output}:{output_subpath} '
+        f'ndim: {labels_ndim}, shape: {labels_shape}, chunksize: {output_chunksize} '
+    ))
     if output_path != args.input and output_subpath != args.input_subpath:
         logger.info(f'Merged labels will overwrite {output_path}:{output_subpath}')
         output_labels_array = input_labels_array
     else:
-        labels_ndim = input_labels_attrs['array_ndim']
-        logger.info((
-            f'Create output labels zarr {args.output}:{output_subpath} '
-            f'ndim: {labels_ndim}, shape: {labels_shape}, chunksize: {output_chunksize} '
-        ))
         input_labels_transforms = input_labels_attrs.get('array_transforms', {})
         logger.debug(f'Input labels transforms: {input_labels_transforms}')
         ome_version = '0.4' if args.zarr_format == 2 else '0.5'
@@ -189,8 +189,8 @@ def _run_merge(args):
         )
 
         if args.sharding_factor:
-            if len(args.sharding_factor) < len(output_blocksize):
-                sharding_factor = (args.sharding_factor + (1,) * (len(output_blocksize) - len(args.output_blocksize)))[::-1]
+            if len(args.sharding_factor) < len(output_chunksize):
+                sharding_factor = (args.sharding_factor + (1,) * (len(output_chunksize) - len(args.output_blocksize)))[::-1]
             else:
                 # just like for the blocksize we already have the correct number of dimensions
                 # just reverse the sharding factor because in the command line we specify it as x,y,z[,c,t]
