@@ -68,7 +68,7 @@ def _define_args():
                              default=(),
                              metavar='SX,SY,SZ',
                              help='Sharding factor per spatial axis (zarr v3 only). '
-                                  'Shard size = output_blocksize * factor.')
+                                  'Shard size = input_chunksize * factor.')
 
     args_parser.add_argument('--working-dir', '--working_dir',
                              dest='working_dir',
@@ -207,7 +207,7 @@ def _run_merge(args):
 
         logger.info((
             f'Create labels zarr {output_path}:{output_subpath} '
-            f'zarr format: {args.zarr_format}, shape: {labels_shape}, chunksize: {output_blocksize} '
+            f'zarr format: {args.zarr_format}, shape: {labels_shape}, chunksize: {output_chunksize} '
             f'shard_shape: {shard_shape} '
             f'compressor: {args.compressor} '
         ))
