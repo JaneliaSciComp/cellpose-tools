@@ -16,13 +16,12 @@ class ConfigureWorkerPlugin(WorkerPlugin):
         self.logging_config = logging_config
         self.verbose = verbose
         self.worker_cpus = worker_cpus
-        self.logger = None
 
     def setup(self, worker: Worker):
-        self.logger = configure_logging(None, self.verbose)
+        logger = configure_logging(self.logging_config, self.verbose)
         _set_cpu_resources(self.worker_cpus)
         if self.models_dir:
-            self.logger.info(f'Set cellpose models path: {self.models_dir}')
+            logger.info(f'Set cellpose models path: {self.models_dir}')
             os.environ['CELLPOSE_LOCAL_MODELS_PATH'] = self.models_dir
 
     def teardown(self, worker: Worker):

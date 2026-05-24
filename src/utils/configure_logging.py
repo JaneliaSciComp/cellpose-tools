@@ -20,5 +20,3 @@ def configure_logging(config_file, verbose, logger_name=None):
                                 logging.StreamHandler(stream=sys.stdout)
                             ])
     return logging.getLogger(logger_name)
-
-
