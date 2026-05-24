@@ -631,7 +631,7 @@ def _merge_labels(label_block_indices, faces, boxes, all_label_ids,
 
     logger.info(f'Relabel {all_label_ids.shape} blocks from {new_labeling_path}')
     label_slices = slices_from_chunks(
-        normalize_chunks(target_labels_zarr.chunks, shape=target_labels_zarr.shape)
+        normalize_chunks(target_labels_zarr.metadata.chunk_grid.chunk_shape, shape=target_labels_zarr.shape)
     )
     total_chunks = len(label_slices)
     if mask is not None or roi is not None:
