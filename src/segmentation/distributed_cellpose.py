@@ -167,8 +167,6 @@ def distributed_eval(
             boxes.extend(bboxes)
             all_label_ids = np.concatenate([all_label_ids, blids]).astype(np.uint32)
 
-    dask_client.run(os.sync)
-
     logger.info((
         f'Finished segmenting: {len(block_indices)} {blocksize} blocks '
         f'with overlap {blockoverlaps}'
