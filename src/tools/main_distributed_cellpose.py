@@ -436,7 +436,6 @@ def _run_segmentation(args):
                     f'timeindex: {input_timeindex}, input channels: {args.input_channels} '
                     f'process block size: {process_blocksize}, blocks overlaps: {blocks_overlaps}'
                 ))
-
                 output_labels, boxes = distributed_eval(
                     input_image_array,
                     input_timeindex,

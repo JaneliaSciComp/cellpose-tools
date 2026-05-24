@@ -253,6 +253,7 @@ def _run_merge(args):
         mask = None
 
     # call distributed label merge
+    logger.info(f'Merge labels using process size: {process_blocksize}')
     _, boxes = distributed_merge(
         input_labels_array,
         process_blocksize,
