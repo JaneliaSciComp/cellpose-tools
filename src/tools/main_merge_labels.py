@@ -190,7 +190,7 @@ def _run_merge(args):
 
         if args.sharding_factor:
             if len(args.sharding_factor) < len(output_chunksize):
-                sharding_factor = (args.sharding_factor + (1,) * (len(output_chunksize) - len(args.output_blocksize)))[::-1]
+                sharding_factor = (args.sharding_factor + (1,) * (len(output_chunksize) - len(args.sharding_factor)))[::-1]
             else:
                 # just like for the blocksize we already have the correct number of dimensions
                 # just reverse the sharding factor because in the command line we specify it as x,y,z[,c,t]
