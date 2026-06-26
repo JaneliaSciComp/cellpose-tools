@@ -702,7 +702,7 @@ def distributed_merge(
             logger.error(f'Block label extract error: {''.join(traceback.format_tb(tb))}')
         else:
             bi, bfs, bboxes, blids = r
-            logger.debug(f'Finished getting label info for block {bi} (found {len(blids)} labels) ')
+            logger.info(f'Finished getting label info for block {bi} (found {len(blids)} labels) ')
             label_block_indices.append(bi)
             faces.append(bfs)
             boxes.extend(bboxes)
