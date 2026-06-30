@@ -9,7 +9,7 @@ description = "Tools for running distributed cellpose for large images"
 license = "BSD-3-Clause"
 requires-python = ">=3.12"
 dependencies = [
-    "bokeh>=3.1.0",
+    "bokeh>=3.3.0",
     "cellpose==4.2.1.1",
     "dask==2026.6.0",
     "distributed==2026.6.0",
