@@ -22,19 +22,19 @@ def _define_args():
 
 def download_cellpose_models(models_dir, model_name):
 
-    from cellpose.models import get_user_models, model_path
+    from cellpose.models import get_user_models, cache_model_path
 
     if models_dir is not None:
         os.environ['CELLPOSE_LOCAL_MODELS_PATH'] = models_dir
         model_fname = f'{models_dir}/${model_name}'
         if os.path.exists(model_fname) and os.path.getsize(model_fname):
-            model_path(model_name)
+            cache_model_path(model_name)
             return
 
     try:
         print('Cache cellpose models', model_name, flush=True)
         get_user_models()
-        model_path(model_name)
+        cache_model_path(model_name)
     except:
         raise
 
