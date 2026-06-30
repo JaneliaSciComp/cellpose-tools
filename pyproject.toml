@@ -23,7 +23,7 @@ dependencies = [
     "torch==2.12.1",
     "torchvision==0.27.1",
     "zarr==3.2.1",
-    "zarr-tools @ git+https://github.com/JaneliaSciComp/zarr-tools.git@4eaf426",
+    "zarr-tools @ git+https://github.com/JaneliaSciComp/zarr-tools.git@907b42f",
     "dinov3 @ git+https://github.com/facebookresearch/dinov3@346f38f",
 ]
 
