@@ -7,6 +7,7 @@ from scipy.ndimage import gaussian_filter
 
 logger = logging.getLogger(__name__)
 
+
 default_preprocessing_params_str="""
 unsharp:
     sigma_one: 1.0
