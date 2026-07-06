@@ -119,9 +119,9 @@ def distributed_eval(
         f'image channels {input_channels} '
     ))
     diameter = cellpose_eval_args.get('diameter')
+
     blocksize = prepare_blocksize(image_shape, blocksize)
-    blockoverlaps = prepare_overlaps(image_shape, blocksize, blockoverlaps,
-                                     default_overlap=2 * diameter if diameter is not None else None)
+    blockoverlaps = prepare_overlaps(image_shape, blocksize, blockoverlaps, default_overlap=diameter)
     block_indices, block_crops = get_block_crops(
         image_shape, blocksize, blockoverlaps, mask, roi,
     )

@@ -122,6 +122,7 @@ def _define_args():
                                dest='cell_diameter',
                                type=floattuple,
                                metavar=('dx','dy','dz'),
+                               default=None,
                                help="Cell diameter")
     cellpose_args.add_argument('--norm-lowhigh', '--norm_lowhigh',
                                dest='norm_lowhigh',

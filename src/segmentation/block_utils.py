@@ -100,32 +100,37 @@ def prepare_blocksize(shape: Tuple[int, ...]|List[int],
 def prepare_overlaps(shape: Tuple[int, ...], 
                      blocksize: Tuple[int, ...]|List[int],
                      blockoverlaps: Tuple[int, ...]|List[int]|None,
-                     default_overlap: float|None=None) -> List[int]:
-    ndim = len(shape)
+                     default_overlap: float|Tuple[float,...]|None=None) -> List[int]:
+    shape_ndim = len(shape)
     blocksize_ndim = len(blocksize)
 
-    def default_overlap_forsize(s):
-        return int(s * 0.1) if default_overlap is None else int(default_overlap)
+    def _get_default_overlap(dim):
+        if isinstance(default_overlap, (int, float)):
+            return int(default_overlap)
+        elif isinstance(default_overlap, (list, tuple)):
+            if len(default_overlap) > dim:
+                return int(default_overlap[dim])
+        # default to 10% of the corresponding blocksize
+        return int(blocksize[dim] * 0.1)
 
     # If overlaps not provided (None / empty), compute defaults for every blocksize dim
     if not blockoverlaps:
-        offset = ndim - blocksize_ndim  # blocksize is right-aligned to shape
+        offset = shape_ndim - blocksize_ndim  # blocksize is right-aligned to shape
         return [
-            0 if blocksize[i] == shape[i + offset] 
-              else default_overlap_forsize(blocksize[i])
+            0 if blocksize[i] == shape[i + offset] else _get_default_overlap(i)
             for i in range(blocksize_ndim)
         ]
 
     # If overlaps provided as list/tuple, right-align overlaps to blocksize
     if isinstance(blockoverlaps, (list, tuple)):
         bo_ndim = len(blockoverlaps)
-        offset_shape = ndim - blocksize_ndim
+        offset_shape = shape_ndim - blocksize_ndim
         offset_ov = max(blocksize_ndim - bo_ndim, 0)  # how much overlaps lags behind blocksize
         return [
             0 if blocksize[i] == shape[i + offset_shape]
             else (int(blockoverlaps[i - offset_ov])
                   if i >= offset_ov 
-                  else default_overlap_forsize(blocksize[i]))
+                  else _get_default_overlap(i))
             for i in range(blocksize_ndim)
         ]
 
