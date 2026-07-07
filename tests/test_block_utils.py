@@ -11,7 +11,7 @@ from segmentation.block_utils import prepare_overlaps
         ((25,), [25, 12, 12]),
         ((25, 25), [25, 25, 12]),
         ((25, 25, 15), [25, 25, 15]),
-        ((25, 25, 25, 30), [25, 25, 25]),
+        ((25, 15, 25, 30), [25, 15, 25]),
     ],
 )
 def test_prepare_overlaps_using_diameter(diameter, expected):
