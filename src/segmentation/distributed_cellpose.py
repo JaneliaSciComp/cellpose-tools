@@ -158,7 +158,8 @@ def distributed_eval(
     for f, r in as_completed(futures, with_results=True):
         if f.cancelled() or f.status == 'error':
             tb = f.traceback()
-            logger.error(f'Block segmenting error: {''.join(traceback.format_tb(tb))}')
+            stacktrace = ''.join(traceback.format_tb(tb))
+            logger.error(f'Block segmenting error: {stacktrace}')
         else:
             bi, bfs, bboxes, blids = r
             logger.debug(f'Finished segmenting block {bi} (found {len(blids)} labels) ')
@@ -699,7 +700,8 @@ def distributed_merge(
     for f, r in as_completed(futures, with_results=True):
         if f.cancelled():
             tb = f.traceback()
-            logger.error(f'Block label extract error: {''.join(traceback.format_tb(tb))}')
+            stacktrace = ''.join(traceback.format_tb(tb))
+            logger.error(f'Block label extract error: {stacktrace}')
         else:
             bi, bfs, bboxes, blids = r
             logger.info(f'Finished getting label info for block {bi} (found {len(blids)} labels) ')
