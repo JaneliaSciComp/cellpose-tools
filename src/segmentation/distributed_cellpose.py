@@ -431,7 +431,7 @@ def _read_preprocess_and_segment(
 
     block_coords = tuple(block_coords_list)
     logger.info((
-        f'Reading {block_coords} block from the input zarr '
+        f'Reading {block_coords} block from the {input_zarr.shape} input zarr '
         f'based on the input crop: {crop} '
         f'timeindex {input_timeindex} '
         f'channels {input_channels} '
