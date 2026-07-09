@@ -131,7 +131,8 @@ def distributed_eval(
         return labels_zarr, []
 
     logger.info((
-        f'Start segmenting: {len(block_indices)} {blocksize} blocks '
+        f'Start segmenting: {len(block_indices)} '
+        f'(out of {get_nblocks(image_shape, blocksize)}) {blocksize} blocks '
         f'with overlap {blockoverlaps} '
         f'from a {image_shape} image '
     ))
