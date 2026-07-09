@@ -1,7 +1,6 @@
 """
 This is code contributed by Greg Fleishman to run Cellpose on a Dask cluster.
 """
-import dask_image.ndmeasure as di_ndmeasure
 import logging
 import numpy as np
 import os
@@ -824,10 +823,7 @@ def _block_face_adjacency_graph(faces, labels_range, label_dist_th=1.0):
         a = _shrink_labels(face[sl0], label_dist_th)
         b = _shrink_labels(face[sl1], label_dist_th)
         face = np.concatenate((a, b), axis=np.argmin(a.shape))
-        mapped = di_ndmeasure._utils._label._across_block_label_grouping(
-            face,
-            structure
-        )
+        mapped = _across_block_label_grouping(face, structure)
         all_mappings.append(mapped)
     i, j = np.concatenate(all_mappings, axis=1)
     v = np.ones_like(i)
@@ -843,10 +839,65 @@ def _shrink_labels(plane, threshold):
     """
     gradmag = np.linalg.norm(np.gradient(plane.squeeze()), axis=0)
     shrunk_labels = np.copy(plane.squeeze())
+    # zero the boundary of the label regions
     shrunk_labels[gradmag > 0] = 0
     distances = scipy.ndimage.distance_transform_edt(shrunk_labels)
+    # then zero regions within the threshold from the boundary, i.e.,
+    # each label is eroded inward by ~ threshold pixels
     shrunk_labels[distances <= threshold] = 0
     return shrunk_labels.reshape(plane.shape)
+
+
+def _across_block_label_grouping(face, structure):
+    """
+    Find groups of labels that should be merged across a block boundary.
+
+    `face` is a 2-plane-thick slab straddling the boundary between two
+    adjacent blocks. Labels are already globally unique across blocks, so a
+    connected-component labeling of the slab links label voxels that touch
+    across the boundary. Any global labels falling inside the same connected
+    component are then reported as pairs of labels that belong to the same
+    object.
+
+    This is a self-contained reimplementation of
+    di_ndmeasure._utils._label._across_block_label_grouping to avoid depending
+    on an internal dask_image method.
+
+    Parameters
+    ----------
+    face : array-like
+        The boundary slab (thickness 2 along the boundary axis) between two
+        blocks.
+    structure : array-like
+        Structuring element used for the connected-component labeling.
+
+    Returns
+    -------
+    grouped : ndarray of shape (2, M)
+        Each column (i, j) is an edge stating that labels i and j belong to
+        the same group. The connected components of this graph are the label
+        groups to merge.
+    """
+    component_labels = scipy.ndimage.label(face, structure)[0].ravel()
+    face_labels = face.ravel()
+    foreground = face_labels != 0
+    if not np.any(foreground):
+        return np.empty((2, 0), dtype=face.dtype)
+
+    matching = np.stack(
+        (component_labels[foreground], face_labels[foreground]),
+        axis=1
+    )
+    matching = np.unique(matching, axis=0)
+    if len(matching) < 2:
+        return np.empty((2, 0), dtype=matching.dtype)
+
+    common_labels = matching[:, 0]
+    labels = matching[:, 1]
+    in_group = np.flatnonzero(common_labels[1:] == common_labels[:-1])
+    if len(in_group) == 0:
+        return np.empty((2, 0), dtype=matching.dtype)
+    return np.stack((labels[in_group], labels[in_group + 1]), axis=0)
 
 
 def _merge_all_boxes(boxes, box_ids):
