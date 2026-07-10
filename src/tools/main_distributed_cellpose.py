@@ -100,7 +100,6 @@ def _define_args():
                              help='If set output label values in OME metadata')
     args_parser.add_argument('--zarr-format', '--zarr_format',
                              type=int,
-                             default=2,
                              dest='zarr_format',
                              help='Zarr format (2 or 3 for v2 or v3)')
     args_parser.add_argument('--sharding-factor', '--sharding_factor',
@@ -386,7 +385,7 @@ def _run_segmentation(args):
             }
             input_image_array = open_array(input_image_attrs['array_storepath'], input_image_attrs['array_subpath'])
             labels_zarr, shard_shape = _create_output_labels_zarr(args, input_image_attrs)
-            logger.info(f'Output format/shard shape: {args.zarr_format}/{shard_shape}')
+
             if dask_client is not None:
                 # set the process size and the blocks overlap
                 output_chunks_spatial = np.array(labels_zarr.chunks[-3:])
@@ -471,9 +470,9 @@ def _run_segmentation(args):
                 )
 
             logger.info(f'Finished segmentation process. Found {nlabels-1} labels')
-            output__container_type = container_type(args.output)
-            if output__container_type != 'zarr':
-                logger.info(f'Save output labels as {output__container_type} at {args.output}')
+            output_container_type = container_type(args.output)
+            if output_container_type != 'zarr' and output_container_type != 'zarr2':
+                logger.info(f'Save output labels as {output_container_type} at {args.output}')
                 write_zarray_as(output_labels, args.output, args.output_subpath)
             elif args.with_label_values and nlabels > 0:
                 _update_image_label_attrs(output_labels, nlabels)
@@ -501,16 +500,22 @@ def _create_output_labels_zarr(args, image_attrs, labels_dtype='uint32'):
     output_labels_container_type = container_type(args.output)
     output_subpath = args.output_subpath if args.output_subpath else args.input_subpath
 
-    if output_labels_container_type != 'zarr':
+    if output_labels_container_type != 'zarr' and output_labels_container_type != 'zarr2':
         # since the output is not a zarr - create a temporary zarr to hold the labels
         labels_zarr_path = f'{args.working_dir}/segmentation.zarr'
         labels_array_subpath = 'block_labels'
         ome_metadata = {}
+        zarr_format = 2 if args.zarr_format == 2 else 3
     else:
         labels_zarr_path = args.output
         labels_array_subpath = output_subpath
         image_transforms = image_attrs.get('array_transforms', {})
-        ome_version = '0.4' if args.zarr_format == 2 else '0.5'
+        if args.zarr_format == 2 or output_labels_container_type == 'zarr2':
+            ome_version = '0.4'
+            zarr_format = 2
+        else:
+            ome_version = '0.5'
+            zarr_format = 3
         logger.info(f'Create OME {ome_version}')
         ome_metadata = create_ome_metadata(
             os.path.basename(labels_zarr_path),
@@ -558,16 +563,16 @@ def _create_output_labels_zarr(args, image_attrs, labels_dtype='uint32'):
     else:
         sharding_factor = None
 
-    logger.info(f'Output blocksize: {output_blocksize}, sharding factor: {sharding_factor}')
+    logger.info(f'Output zarr_format: {zarr_format}, blocksize: {output_blocksize}, sharding factor: {sharding_factor}')
     shard_shape = derive_shard_shape(
         output_blocksize,
-        args.zarr_format,
+        zarr_format,
         sharding_factor,
     )
 
     logger.info((
         f'Create labels zarr {labels_zarr_path}:{labels_array_subpath} '
-        f'zarr format: {args.zarr_format}, shape: {labels_shape}, chunksize: {output_blocksize} '
+        f'zarr format: {zarr_format}, shape: {labels_shape}, chunksize: {output_blocksize} '
         f'shard_shape: {shard_shape} '
         f'compressor: {args.compressor} '
     ))
@@ -581,7 +586,7 @@ def _create_output_labels_zarr(args, image_attrs, labels_dtype='uint32'):
         compressor=args.compressor,
         compression_opts=args.compressor_opts,
         parent_array_attrs=ome_metadata,
-        zarr_format=args.zarr_format,
+        zarr_format=zarr_format,
         shard_shape=shard_shape,
     )
     return labels_zarr, shard_shape

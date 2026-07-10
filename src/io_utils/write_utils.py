@@ -13,6 +13,8 @@ def container_type(container_path):
     match container_ext:
         case '.zarr':
             return 'zarr'
+        case '.zarr2':
+            return 'zarr2'
         case '.n5':
             return 'n5'
         case '.tif' | '.tiff':
