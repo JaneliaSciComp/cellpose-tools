@@ -878,15 +878,14 @@ def _across_block_label_grouping(face, structure):
         the same group. The connected components of this graph are the label
         groups to merge.
     """
-    component_labels = scipy.ndimage.label(face, structure)[0]
-    logger.debug(f'Adjacent labels: {component_labels}')
+    component_labels = scipy.ndimage.label(face, structure)[0].ravel()
     face_labels = face.ravel()
     foreground = face_labels != 0
     if not np.any(foreground):
         return np.empty((2, 0), dtype=face.dtype)
 
     matching = np.stack(
-        (component_labels.ravel()[foreground], face_labels[foreground]),
+        (component_labels[foreground], face_labels[foreground]),
         axis=1
     )
     matching = np.unique(matching, axis=0)
