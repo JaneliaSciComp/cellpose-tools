@@ -257,6 +257,7 @@ def local_eval(
         input_image,
         input_timeindex,
         input_channels,
+        (0,) * len(image_shape), # block_index
         None, # no cropping => entire image
         preprocessing_steps=preprocessing_steps,
         cellpose_model_args=cellpose_model_args,
@@ -364,6 +365,7 @@ def _process_block(
         input_zarr,
         input_timeindex,
         input_channels,
+        block_index,
         crop, 
         preprocessing_steps=preprocessing_steps,
         cellpose_model_args=cellpose_model_args,
@@ -410,6 +412,7 @@ def _read_preprocess_and_segment(
     input_zarr,
     input_timeindex,
     input_channels,
+    block_index,
     crop,
     preprocessing_steps=[],
     cellpose_model_args={},
@@ -431,7 +434,7 @@ def _read_preprocess_and_segment(
 
     block_coords = tuple(block_coords_list)
     logger.info((
-        f'Reading {block_coords} block from the {input_zarr.shape} input zarr '
+        f'Reading {block_index} block at {block_coords} from the {input_zarr.shape} input zarr '
         f'based on the input crop: {crop} '
         f'timeindex {input_timeindex} '
         f'channels {input_channels} '
@@ -460,7 +463,7 @@ def _read_preprocess_and_segment(
             if block_ndim >= spatial_dims:
                 z_axis = -3
             else:
-                raise ValueError(f'Cannot handle {spatial_dims}-D segmentation for block of shape {block_shape}')
+                raise ValueError(f'Cannot handle {spatial_dims}-D segmentation for block {block_index} of shape {block_shape} at {crop}')
 
     if input_channel_axis is not None:
         # channel axis is specified
@@ -490,24 +493,29 @@ def _read_preprocess_and_segment(
     model = _get_segmentation_model(cellpose_model_args)
 
     if normalize_args.get('normalize'):
-        logger.info(f'Normalize {image_block.shape} block at {crop} params: {normalize_args}')
+        logger.info(f'Normalize {block_index} block, shape {image_block.shape}, coords {crop}, params: {normalize_args}')
         image_block = transforms.normalize_img(image_block, axis=channel_axis,
                                                **normalize_args)
-    logger.info(f'Eval {image_block.shape} block at {crop} args: {cellpose_eval_args}')
+    logger.info(f'Eval {block_index} block, shape {image_block.shape}, coords {crop}, eval args: {cellpose_eval_args}')
     try:
         labels = model.eval(image_block, **cellpose_eval_args)[0].astype(np.uint32)
     except Exception as e:
         logger.error((
-            f'ERROR eval {image_block.shape} block at {crop} args: {cellpose_eval_args} '
+            f'ERROR eval {image_block.shape} block {block_index} at {crop} args: {cellpose_eval_args} '
             f'err={e} {traceback.format_exception(e)}'
         ))
         raise e
 
     end_time = time.time()
     unique_labels = np.unique(labels)
-    logged_block_message = (f'for block: {crop}' 
-                            if crop is not None
-                            else 'for entire image')
+
+    if crop is None:
+        # evaluating the entire image
+        logged_block_message = 'for entire image'
+    else:
+        # evaluating just a block
+        logged_block_message = f'for block {block_index} at {crop}'
+
     logger.info((
         'Finished model eval '
         f'{logged_block_message} => '
@@ -634,8 +642,11 @@ def _merge_labels(label_block_indices, faces, boxes, all_label_ids,
     )
     total_chunks = len(label_slices)
     if mask is not None or roi is not None:
-        mask_image_ratio = np.array(mask.shape) / target_labels_zarr.shape[-3:] if mask is not None else 0
-        logger.info(f'Mask image ratio for {mask.shape} mask and {target_labels_zarr.shape} labels image: {mask_image_ratio}')
+        if mask is not None:
+            mask_image_ratio = np.array(mask.shape) / target_labels_zarr.shape[-3:]
+            logger.info(f'Mask image ratio for {mask.shape} mask and {target_labels_zarr.shape} labels image: {mask_image_ratio}')
+        else:
+            mask_image_ratio = 0
         label_slices = [
             crop for crop in label_slices
             if is_foreground_block(crop, mask, mask_image_ratio, roi, target_labels_zarr.shape)
