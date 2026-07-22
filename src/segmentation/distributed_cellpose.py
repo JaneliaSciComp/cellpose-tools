@@ -481,6 +481,7 @@ def _read_preprocess_and_segment(
         else:
             # assume the channel axis is before the spatial axes
             channel_axis = block_ndim - spatial_dims - 1
+    logger.debug(f'Set channel axis: {channel_axis}, z_axis: {z_axis}')
     cellpose_eval_args['channel_axis'] = channel_axis
     cellpose_eval_args['z_axis'] = z_axis
 
