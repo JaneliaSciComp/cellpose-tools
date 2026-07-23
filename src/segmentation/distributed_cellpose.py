@@ -117,10 +117,13 @@ def distributed_eval(
         f'timeindex: {input_timeindex} '
         f'image channels {input_channels} '
     ))
-    diameter = cellpose_eval_args.get('diameter')
+    cell_diameter = cellpose_eval_args.get('diameter')
+    if cell_diameter is not None:
+        if isinstance(cell_diameter, (list, tuple)) and len(cell_diameter) > 0:
+            cellpose_eval_args['diameter'] = cell_diameter[0]
 
     blocksize = prepare_blocksize(image_shape, blocksize)
-    blockoverlaps = prepare_overlaps(image_shape, blocksize, blockoverlaps, default_overlap=diameter)
+    blockoverlaps = prepare_overlaps(image_shape, blocksize, blockoverlaps, default_overlap=cell_diameter)
     block_indices, block_crops = get_block_crops(
         image_shape, blocksize, blockoverlaps, mask, roi,
     )
