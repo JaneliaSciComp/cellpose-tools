@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cellpose-tools"
-version = "4.2.1"
+version = "4.2.1.1"
 description = "Tools for running distributed cellpose for large images"
 license = "BSD-3-Clause"
 requires-python = ">=3.12"
