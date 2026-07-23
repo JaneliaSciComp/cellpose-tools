@@ -26,18 +26,24 @@ def get_block_crops(shape, blocksize, overlaps, mask, roi):
     indices, crops = [], []
     nblocks = get_nblocks(shape, blocksize)
     for index in np.ndindex(*nblocks):
-        start = blocksize * index - blockoverlaps
-        stop = start + blocksize + 2 * blockoverlaps
+        start_block = blocksize * index
+        stop_block = np.minimum(start_block + blocksize, shape)
+        block_crop = tuple(slice(x, y) for x, y in zip(start_block, stop_block))
+        foreground = is_foreground_block(block_crop, mask, mask_ratio, roi, shape)
+        if foreground:
+            start_crop = np.maximum(0, start_block - blockoverlaps)
+            stop_crop = np.minimum(stop_block + blockoverlaps, shape)
+            crop = tuple(slice(x, y) for x, y in zip(start_crop, stop_crop))
+            if roi is not None:
+                logger.debug(f'Block {index} at {block_crop} (with overlaps {crop}) intersects the defined roi {roi}')
+            indices.append(index)
+            crops.append(crop)
+
+
         start = np.maximum(0, start)
         stop = np.minimum(shape, stop)
         crop = tuple(slice(x, y) for x, y in zip(start, stop))
 
-        foreground = is_foreground_block(crop, mask, mask_ratio, roi, shape)
-        if foreground:
-            if roi is not None:
-                logger.debug(f'Block {index} at {crop} intersects the defined roi {roi}')
-            indices.append(index)
-            crops.append(crop)
 
     return indices, crops
 
