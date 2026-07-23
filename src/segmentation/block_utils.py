@@ -39,12 +39,6 @@ def get_block_crops(shape, blocksize, overlaps, mask, roi):
             indices.append(index)
             crops.append(crop)
 
-
-        start = np.maximum(0, start)
-        stop = np.minimum(shape, stop)
-        crop = tuple(slice(x, y) for x, y in zip(start, stop))
-
-
     return indices, crops
 
 
